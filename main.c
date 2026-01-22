@@ -1,4 +1,4 @@
-// Markdown Viewer © 2022 by Thomas Führinger
+// Markdown Viewer ï¿½ 2022 by Thomas Fï¿½hringer
 
 #pragma once
 //#include <SDKDDKVer.h>
@@ -8,6 +8,7 @@
 #include <Shellapi.h>
 #include <shlwapi.h>
 #include <pathcch.h>
+#include <ShellScalingApi.h>
 
 #include "Resource.h"
 
@@ -51,6 +52,8 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 {
 	UNREFERENCED_PARAMETER(hPrevInstance);
 	UNREFERENCED_PARAMETER(lpCmdLine);
+
+	SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
 
 	WNDCLASSEX wc;
 	MSG msg;
