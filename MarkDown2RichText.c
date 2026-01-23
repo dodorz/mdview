@@ -247,6 +247,32 @@ is_unordered_list(const char* line)
 	return -1;
 }
 
+// Check if line is a task list item and return checkbox state
+// Returns: 0 = unchecked, 1 = checked, -1 = not a task list
+static int
+is_task_list(const char* line, int* marker_pos)
+{
+	const char* p = line;
+
+	while (*p == ' ' || *p == '\t')
+		p++;
+
+	if ((*p == '*' || *p == '+' || *p == '-') && *(p + 1) == ' ') {
+		*marker_pos = (int)(p - line);
+		const char* check = p + 2;
+		
+		// Check for [ ] or [x] or [X]
+		if (*check == '[' && *(check + 2) == ']') {
+			if (*(check + 1) == ' ')
+				return 0; // Unchecked
+			else if (*(check + 1) == 'x' || *(check + 1) == 'X')
+				return 1; // Checked
+		}
+	}
+
+	return -1;
+}
+
 static int
 is_ordered_list(const char* line)
 {
@@ -374,6 +400,58 @@ count_table_columns(const char* line)
 	return count > 0 ? count : 1;
 }
 
+// Trim trailing # characters and spaces from heading text
+static char*
+trim_trailing_hashes(char* text)
+{
+	if (!text || *text == 0)
+		return text;
+	
+	int len = (int)strlen(text);
+	int end = len - 1;
+	
+	// Trim trailing spaces and # characters
+	while (end >= 0 && (text[end] == ' ' || text[end] == '#')) {
+		end--;
+	}
+	
+	// Null-terminate at the new end
+	text[end + 1] = 0;
+	return text;
+}
+
+// Check if the string at p starts with a valid Setext underline
+// Returns length of line to skip if match, otherwise 0
+// type: 1 for '=', 2 for '-'
+static int
+get_setext_underline(const char* p, int* type)
+{
+	const char* start = p;
+	int spaces = 0;
+	while (*p == ' ' && spaces < 4) {
+		p++;
+		spaces++;
+	}
+
+	char c = *p;
+	if (c != '=' && c != '-')
+		return 0;
+
+	*type = (c == '=') ? 1 : 2;
+
+	while (*p == c)
+		p++;
+	
+	while (*p == ' ' || *p == '\t')
+		p++;
+		
+	if (*p == '\r') p++;
+	if (*p == '\n') p++;
+	else if (*p != 0) return 0; // Must span entire line (or end of string)
+
+	return (int)(p - start);
+}
+
 static int bold_state = 0;
 static int italic_state = 0;
 static int strike_state = 0;
@@ -473,6 +551,33 @@ append_buffer_line(char* line)
 			}
 			pos += 1;
 			continue;
+		}
+
+		// Autolinks: <http://url> or <email@domain>
+		if (strncmp(pos, "<", 1) == 0) {
+			char* end = strstr(pos + 1, ">");
+			if (end) {
+				char* url_start = pos + 1;
+				int url_len = (int)(end - url_start);
+				
+				// Check if it's a URL or email
+				if (url_len > 0 && (strstr(url_start, "://") || strstr(url_start, "@"))) {
+					*end = 0;
+					append_buffer("\\ul {\\field{\\*\\fldinst {HYPERLINK \"");
+					
+					// Add mailto: prefix for emails if not present
+					if (strchr(url_start, '@') && !strstr(url_start, "://")) {
+						append_buffer("mailto:");
+					}
+					
+					append_buffer(url_start);
+					append_buffer("\" }}{\\fldrslt {");
+					append_buffer(url_start);
+					append_buffer("}}}\\ul0 ");
+					pos = end + 1;
+					continue;
+				}
+			}
 		}
 
 		if (strncmp(pos, "![", 2) == 0) {
@@ -722,8 +827,34 @@ markdown2rtf(const char* md, const char* img_path)
 
 		int ul_pos = is_unordered_list(line);
 		int ol_pos = is_ordered_list(line);
+		int task_marker_pos = 0;
+		int task_state = is_task_list(line, &task_marker_pos);
 
-		if (ul_pos >= 0) {
+		if (task_state >= 0) {
+			// Task list item
+			int depth = count_indent(line);
+			int indent = (depth + 1) * 360;
+
+			char list_fmt[128];
+			sprintf(list_fmt, "{\\pard\\fi-180\\li%d ", indent);
+			append_buffer(list_fmt);
+			
+			// Render checkbox: ☐ (U+2610) for unchecked, ☑ (U+2611) for checked
+			if (task_state == 0)
+				append_buffer("{\\u9744?}\\tab "); // ☐ unchecked
+			else
+				append_buffer("{\\u9745?}\\tab "); // ☑ checked
+
+			// Skip past "- [ ] " or "- [x] " (marker + space + checkbox + space)
+			append_buffer_line(line + task_marker_pos + 6);
+			append_buffer("\\par}\n");
+
+			prev_list_depth = depth + 1;
+			free(line);
+			continue;
+		}
+		else if (ul_pos >= 0) {
+			// Regular unordered list
 			int depth = count_indent(line);
 			int indent = (depth + 1) * 360;
 
@@ -779,30 +910,73 @@ markdown2rtf(const char* md, const char* img_path)
 			}
 			else
 				append_buffer("{\\par\\fs32\\sb100\\sa100\\b1 ");
-			append_buffer_line(line + 2);
+			char* heading_text = trim_trailing_hashes(line + 2);
+			append_buffer_line(heading_text);
 			append_buffer("\\par\\pard}\n");
 		}
 		else if (strncmp(line, "## ", 3) == 0) {
 			append_buffer("{\\par\\fs26\\sb170\\sa100\\b1 ");
-			append_buffer_line(line + 3);
+			char* heading_text = trim_trailing_hashes(line + 3);
+			append_buffer_line(heading_text);
 			append_buffer("\\par\\pard}\n");
 		}
 		else if (strncmp(line, "### ", 4) == 0) {
 			append_buffer("{\\par\\pard\\fs24\\sb150\\sa50\\b1 ");
-			append_buffer_line(line + 4);
+			char* heading_text = trim_trailing_hashes(line + 4);
+			append_buffer_line(heading_text);
 			append_buffer("\\par}\n");
 		}
 		else if (strncmp(line, "#### ", 5) == 0) {
 			append_buffer("{\\par\\pard\\fs23\\sb120\\sa50\\b1 ");
-			append_buffer_line(line + 5);
+			char* heading_text = trim_trailing_hashes(line + 5);
+			append_buffer_line(heading_text);
 			append_buffer("\\par}\n");
 		}
 		else if (strncmp(line, "##### ", 6) == 0) {
 			append_buffer("{\\par\\pard\\fs22\\sb100\\sa50\\b1 ");
-			append_buffer_line(line + 6);
+			char* heading_text = trim_trailing_hashes(line + 6);
+			append_buffer_line(heading_text);
+			append_buffer("\\par}\n");
+		}
+		else if (strncmp(line, "###### ", 7) == 0) {
+			append_buffer("{\\par\\pard\\fs21\\sb80\\sa50\\b1 ");
+			char* heading_text = trim_trailing_hashes(line + 7);
+			append_buffer_line(heading_text);
 			append_buffer("\\par}\n");
 		}
 		else {
+			// Check for Setext lookahead
+			int setext_type = 0;
+			int has_content = 0;
+			const char* check = line;
+			while (*check) { if (*check != ' ' && *check != '\t') { has_content = 1; break; } check++; }
+
+			int skip_len = (has_content) ? get_setext_underline(pos, &setext_type) : 0;
+			
+			if (skip_len > 0) {
+				// Render as Setext Heading
+				if (setext_type == 1) { // H1 ===
+					if (top_of_page) {
+						append_buffer("{\\fs32\\sb0\\sa100\\b1 ");
+						top_of_page = 0;
+					}
+					else
+						append_buffer("{\\par\\fs32\\sb100\\sa100\\b1 ");
+				}
+				else { // H2 ---
+					append_buffer("{\\par\\fs26\\sb170\\sa100\\b1 ");
+				}
+
+				append_buffer_line(line);
+				append_buffer("\\par\\pard}\n");
+
+				// Skip the underline line
+				pos += skip_len;
+				
+				free(line);
+				continue;
+			}
+
 			int len = (int)strlen(line);
 			if (len >= 2 && strncmp(line + len - 2, "  ", 2) == 0) {
 				line[len - 2] = 0;
