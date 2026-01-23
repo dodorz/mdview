@@ -456,6 +456,8 @@ static int bold_state = 0;
 static int italic_state = 0;
 static int strike_state = 0;
 static int code_state = 0;
+static int sup_state = 0;
+static int sub_state = 0;
 
 static void
 append_buffer_line(char* line)
@@ -469,7 +471,8 @@ append_buffer_line(char* line)
 				next == '{' || next == '}' || next == '[' || next == ']' ||
 				next == '(' || next == ')' || next == '#' || next == '+' ||
 				next == '-' || next == '.' || next == '!' || next == '|' ||
-				next == '~' || next == '>') {
+				next == '-' || next == '.' || next == '!' || next == '|' ||
+				next == '~' || next == '>' || next == '^') {
 				append_rtf_char(next);
 				pos += 2;
 				continue;
@@ -481,6 +484,7 @@ append_buffer_line(char* line)
 			if (*(pos + 1) == '`') backticks = 2;
 
 			char* end = pos + backticks;
+			int found = 0;
 			while (*end) {
 				if (*end == '`') {
 					int end_ticks = 1;
@@ -496,12 +500,13 @@ append_buffer_line(char* line)
 						}
 						append_buffer("}");
 						pos = end + backticks;
+						found = 1;
 						break;
 					}
 				}
 				end++;
 			}
-			if (*end == 0) {
+			if (!found) {
 				append_char('`');
 				pos++;
 			}
@@ -520,6 +525,34 @@ append_buffer_line(char* line)
 				strike_state = 1;
 			}
 			pos += 2;
+			continue;
+		}
+
+		if (strncmp(pos, "~", 1) == 0) {
+			*pos = 0;
+			if (sub_state) {
+				append_buffer("\\nosupersub ");
+				sub_state = 0;
+			}
+			else {
+				append_buffer("\\sub ");
+				sub_state = 1;
+			}
+			pos += 1;
+			continue;
+		}
+
+		if (strncmp(pos, "^", 1) == 0) {
+			*pos = 0;
+			if (sup_state) {
+				append_buffer("\\nosupersub ");
+				sup_state = 0;
+			}
+			else {
+				append_buffer("\\super ");
+				sup_state = 1;
+			}
+			pos += 1;
 			continue;
 		}
 
@@ -760,7 +793,9 @@ markdown2rtf(const char* md, const char* img_path)
 				append_buffer("\\par\\pard\n");
 				prev_list_depth = 0;
 			}
-			append_buffer("\\pard\\brdrb\\brdrs\\brdrw10\\brsp20 \\par\\pard\n");
+			// Use strikethrough spaces to simulate a horizontal line (widely compatible)
+			// Using 20 tabs to cover most window widths
+			append_buffer("\\pard\\sa150\\sl0\\slmult0 {\\strike \\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab} \\par\\pard\n");
 			free(line);
 			continue;
 		}
@@ -788,9 +823,16 @@ markdown2rtf(const char* md, const char* img_path)
 			int content_start;
 			int depth = get_blockquote_depth(line, &content_start);
 
-			if (!in_blockquote) {
-				append_buffer("{\\pard\\li360\\ri360\\cf3\\highlight2 ");
-				in_blockquote = 1;
+			if (depth != in_blockquote) {
+				if (in_blockquote > 0) {
+					append_buffer("}\\pard\n");
+				}
+				char fmt[64];
+				int indent = depth * 360;
+				// Increase indent for nested levels
+				sprintf(fmt, "{\\pard\\li%d\\ri%d\\cf3\\highlight2 ", indent, indent);
+				append_buffer(fmt);
+				in_blockquote = depth;
 			}
 
 			append_buffer_line(line + content_start);
@@ -799,7 +841,7 @@ markdown2rtf(const char* md, const char* img_path)
 			free(line);
 			continue;
 		}
-		else if (in_blockquote) {
+		else if (in_blockquote > 0) {
 			append_buffer("}\\pard\n");
 			in_blockquote = 0;
 		}
@@ -861,7 +903,7 @@ markdown2rtf(const char* md, const char* img_path)
 			char list_fmt[128];
 			sprintf(list_fmt, "{\\pard\\fi-180\\li%d ", indent);
 			append_buffer(list_fmt);
-			append_buffer("{\\f2\\'B7}\\tab ");
+			append_buffer("\\bullet\\tab ");
 
 			append_buffer_line(line + ul_pos + 2);
 			append_buffer("\\par}\n");
