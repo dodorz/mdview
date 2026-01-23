@@ -33,6 +33,7 @@ HMENU hMainMenu = NULL;
 HWND hToolBar;
 HWND hRichEdit;
 HWND hStatusBar;
+WCHAR szCurrentFile[MAX_PATH] = L"";
 
 DWORD dwFilesize;
 char* pFileView;
@@ -41,6 +42,7 @@ char* pFileView;
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 INT_PTR CALLBACK About(HWND, UINT, WPARAM, LPARAM);
 char* toU8(const LPWSTR szUTF16);
+int Scale(int iValue);
 
 BOOL FileOpen(WCHAR* lpszTextFileName);
 void FileOpenDialog();
@@ -171,6 +173,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			FileOpenDialog();
 			break;
 
+		case IDM_FILE_REFRESH:
+			if (szCurrentFile[0] != L'\0')
+				FileOpen(szCurrentFile);
+			break;
+
 		case IDM_HELP_ABOUT:
 			DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hwnd, About);
 			break;
@@ -284,6 +291,7 @@ FileOpen(WCHAR* lpszTextFileName)
 
 	if (lpszTextFileName == NULL)
 	{
+		szCurrentFile[0] = L'\0';
 		SendMessageA(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)"");
 		SendMessageW(hMainWindow, WM_SETTEXT, (WPARAM)0, (LPARAM)szAppName);
 		return 0;
@@ -319,6 +327,7 @@ FileOpen(WCHAR* lpszTextFileName)
 		ShowLastError("Invalid file.");
 		return 0;
 	}
+	lstrcpyW(szCurrentFile, lpszTextFileName);
 
 	char* md = malloc(dwFilesize + 2);
 	//memset(md,0, dwFilesize + 1);
@@ -374,9 +383,13 @@ FileOpenDialog()
 
 BOOL CreateToolBar()
 {
+	int iDpi = GetDpiForWindow(hMainWindow);
 	const int ImageListID = 0;
-	const int numButtons = 1;
-	const int bitmapSize = 16;
+	const int numButtons = 3;
+	// Custom scaling: 16px at 100% (96 DPI), 48px at 200% (192 DPI).
+	// Formula: Size = DPI / 3 - 16
+	int bitmapSize = (iDpi / 3) - 16;
+	if (bitmapSize < 16) bitmapSize = 16; // Minimum safe size
 
 	const DWORD buttonStyles = BTNS_AUTOSIZE;
 	HIMAGELIST hImageList = NULL;
@@ -391,26 +404,50 @@ BOOL CreateToolBar()
 		return FALSE;
 	}
 	hImageList = ImageList_Create(bitmapSize, bitmapSize,   // Dimensions of individual bitmaps.
-		ILC_COLOR16 | ILC_MASK,   // Ensures transparent background.
+		ILC_COLOR32 | ILC_MASK,   // Updated to 32-bit color for better scaling
 		numButtons, 0);
 
 	SendMessage(hWndToolbar, TB_SETIMAGELIST, (WPARAM)ImageListID, (LPARAM)hImageList);
-	SendMessage(hWndToolbar, TB_LOADIMAGES, (WPARAM)IDB_STD_SMALL_COLOR, (LPARAM)HINST_COMMCTRL);
+	SendMessage(hWndToolbar, TB_SETBITMAPSIZE, 0, MAKELPARAM(bitmapSize, bitmapSize));
+
+	// Load icons with correct DPI scaling
+	HICON hOpenIcon = (HICON)LoadImage(GetModuleHandle(L"shell32.dll"), MAKEINTRESOURCE(5), IMAGE_ICON, bitmapSize, bitmapSize, LR_SHARED);
+	// Note: index 4 in ExtractIconEx is resource ID 5 in some shell32 versions, but let's use a more robust way if possible.
+	// Actually, LoadIconWithScaleDown is even better for quality.
+	// But let's try a simple approach first:
+	HICON hOpenLarge, hRefreshLarge;
+	ExtractIconEx(L"shell32.dll", 4, &hOpenLarge, NULL, 1);
+	ExtractIconEx(L"shell32.dll", 238, &hRefreshLarge, NULL, 1);
+	
+	// If the extracted icon isn't the right size, we'll use LoadImage on the system icons
+	HICON hCloseIcon = (HICON)LoadImage(NULL, IDI_ERROR, IMAGE_ICON, bitmapSize, bitmapSize, LR_SHARED);
+
+	// Since we want specific size, using LoadImage on resources is better. 
+	// For shell32 icons, we can use private ExtractIcon or similar, but for simplicity:
+	int iOpenIndex = ImageList_AddIcon(hImageList, hOpenLarge);
+	int iRefreshIndex = ImageList_AddIcon(hImageList, hRefreshLarge);
+	int iCloseIndex = ImageList_AddIcon(hImageList, hCloseIcon);
+
+	DestroyIcon(hOpenLarge);
+	DestroyIcon(hRefreshLarge);
+
 	// Send the TB_BUTTONSTRUCTSIZE message, which is required for backward compatibility.
 	SendMessage(hWndToolbar, TB_BUTTONSTRUCTSIZE, (WPARAM)sizeof(TBBUTTON), 0);
 
-	TBBUTTON tbButtons[2] =
+	TBBUTTON tbButtons[5] =
 	{
-		{ MAKELONG(STD_FILEOPEN, ImageListID), IDM_FILE_OPEN, TBSTATE_ENABLED, buttonStyles, { 0 }, 0, (INT_PTR)TEXT("Open") },
-		{ MAKELONG(STD_FILENEW, ImageListID), IDM_FILE_EXIT, TBSTATE_ENABLED, buttonStyles, { 0 }, 0, (INT_PTR)TEXT("Close") }
+		{ iOpenIndex, IDM_FILE_OPEN, TBSTATE_ENABLED, BTNS_AUTOSIZE, { 0 }, 0, (INT_PTR)NULL },
+		{ 0, 0, TBSTATE_ENABLED, BTNS_SEP, {0}, 0, 0},
+		{ iRefreshIndex, IDM_FILE_REFRESH, TBSTATE_ENABLED, BTNS_AUTOSIZE, { 0 }, 0, (INT_PTR)NULL },
+		{ 0, 0, TBSTATE_ENABLED, BTNS_SEP, {0}, 0, 0},
+		{ iCloseIndex, IDM_FILE_EXIT, TBSTATE_ENABLED, BTNS_AUTOSIZE, { 0 }, 0, (INT_PTR)NULL }
 	};
 
-	SendMessage(hWndToolbar, TB_BUTTONSTRUCTSIZE, (WPARAM)sizeof(TBBUTTON), 0);
-	SendMessage(hWndToolbar, TB_ADDBUTTONS, (WPARAM)numButtons, (LPARAM)&tbButtons);
+	SendMessage(hWndToolbar, TB_ADDBUTTONS, (WPARAM)5, (LPARAM)&tbButtons);
 
 	SendMessage(hWndToolbar, TB_AUTOSIZE, 0, 0);
-	SendMessage(hWndToolbar, TB_SETEXTENDEDSTYLE, 0, (LPARAM)TBSTYLE_EX_MIXEDBUTTONS);
-	SendMessage(hWndToolbar, TB_SETBUTTONSIZE, 0, MAKELPARAM(16, 16));
+	int padding = MulDiv(12, iDpi, 96);
+	SendMessage(hWndToolbar, TB_SETBUTTONSIZE, 0, MAKELPARAM(bitmapSize + padding, bitmapSize + padding));
 	ShowWindow(hWndToolbar, TRUE);
 
 	hToolBar = hWndToolbar;
@@ -557,4 +594,10 @@ void ShowLastError(LPCTSTR lpszContext)
 	TCHAR buf[255];
 	FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, 0, GetLastError(), 0, buf, sizeof(buf) / sizeof(TCHAR), 0);
 	MessageBox(0, buf, lpszContext, 0);
+}
+
+int Scale(int iValue)
+{
+	int iDpi = GetDpiForWindow(hMainWindow);
+	return MulDiv(iValue, iDpi, 96);
 }
