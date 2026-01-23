@@ -113,11 +113,13 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 	if (NULL != szArglist && nArgs == 2)
 		FileOpen(szArglist[1]);
 
-	hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDS_APP));
+	// Load accelerator table - IDR_ACCELERATOR must be defined in resource.h
+	// and accelerator table must be defined in Resource.rc
+	hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDR_ACCELERATOR));
 
 	while (GetMessage(&msg, NULL, 0, 0) > 0)
 	{
-		if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg))
+		if (!TranslateAccelerator(hMainWindow, hAccelTable, &msg))
 		{
 			TranslateMessage(&msg);
 			DispatchMessage(&msg);
@@ -161,16 +163,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	case WM_COMMAND:
 		switch (LOWORD(wParam))
 		{
-		case IDM_FILE_CLOSE:
-			FileOpen(NULL);;
+		case IDM_FILE_EXIT:
+			PostQuitMessage(0);
 			break;
 
 		case IDM_FILE_OPEN:
 			FileOpenDialog();
-			break;
-
-		case IDM_FILE_EXIT:
-			PostQuitMessage(0);
 			break;
 
 		case IDM_HELP_ABOUT:
@@ -404,7 +402,7 @@ BOOL CreateToolBar()
 	TBBUTTON tbButtons[2] =
 	{
 		{ MAKELONG(STD_FILEOPEN, ImageListID), IDM_FILE_OPEN, TBSTATE_ENABLED, buttonStyles, { 0 }, 0, (INT_PTR)TEXT("Open") },
-		{ MAKELONG(STD_FILENEW, ImageListID), IDM_FILE_CLOSE, TBSTATE_ENABLED, buttonStyles, { 0 }, 0, (INT_PTR)TEXT("Close") }
+		{ MAKELONG(STD_FILENEW, ImageListID), IDM_FILE_EXIT, TBSTATE_ENABLED, buttonStyles, { 0 }, 0, (INT_PTR)TEXT("Close") }
 	};
 
 	SendMessage(hWndToolbar, TB_BUTTONSTRUCTSIZE, (WPARAM)sizeof(TBBUTTON), 0);
