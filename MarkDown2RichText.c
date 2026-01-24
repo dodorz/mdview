@@ -1027,7 +1027,7 @@ markdown2rtf(const char* md, const char* img_path)
 			}
 			else if (len > 0) {
 				append_buffer_line(line);
-				append_buffer("\n");
+				append_buffer("\\par\n");
 			}
 			else {
 				append_buffer("\\par\n");
