@@ -754,6 +754,27 @@ markdown2rtf(const char* md, const char* img_path)
 	append_buffer("{\\colortbl;\\red5\\green10\\blue221;\\red235\\green235\\blue235;\\red102\\green102\\blue102;}");
 	append_buffer("\\fs22\n");
 
+	// Skip YAML front matter if present
+	if (strncmp(md, "---\n", 4) == 0 || strncmp(md, "---\r\n", 5) == 0) {
+		char* yaml_line = get_line(&pos);
+		if (yaml_line != NULL) {
+			free(yaml_line); // Skip the opening "---" line
+			
+			// Skip all YAML content until closing marker
+			while ((yaml_line = get_line(&pos)) != NULL) {
+				// Note: get_line() strips trailing newlines, so compare without \n
+				if (strcmp(yaml_line, "---") == 0 || strcmp(yaml_line, "...") == 0) {
+					break; // Found closing marker, stop skipping
+				}
+				free(yaml_line); // Skip this YAML line
+			}
+			
+			if (yaml_line != NULL) {
+				free(yaml_line); // Free the closing marker line
+			}
+		}
+	}
+
 	int prev_list_depth = 0;
 	int in_blockquote = 0;
 	int prev_was_indented_code = 0;

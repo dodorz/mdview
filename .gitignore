@@ -16,6 +16,9 @@ bld/
 [Ll]og/
 [Ll]ogs/
 
+## Test Case
+[Tt]est/
+
 ## Visual Studio 缓存/选项目录
 .vs/
 .vscode/
