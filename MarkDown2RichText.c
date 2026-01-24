@@ -458,6 +458,251 @@ static int strike_state = 0;
 static int code_state = 0;
 static int sup_state = 0;
 static int sub_state = 0;
+static int html_u_state = 0;
+
+static int
+append_html_entity(const char* entity)
+{
+	if (strncmp(entity, "&nbsp;", 6) == 0) {
+		append_char(' ');
+		return 1;
+	}
+	else if (strncmp(entity, "&amp;", 5) == 0) {
+		append_char('&');
+		return 1;
+	}
+	else if (strncmp(entity, "&lt;", 4) == 0) {
+		append_char('<');
+		return 1;
+	}
+	else if (strncmp(entity, "&gt;", 4) == 0) {
+		append_char('>');
+		return 1;
+	}
+	else if (strncmp(entity, "&quot;", 6) == 0) {
+		append_char('"');
+		return 1;
+	}
+	else if (strncmp(entity, "&apos;", 6) == 0) {
+		append_char('\'');
+		return 1;
+	}
+	else if (strncmp(entity, "&copy;", 6) == 0) {
+		append_buffer("(c)");
+		return 1;
+	}
+	else if (strncmp(entity, "&reg;", 5) == 0) {
+		append_buffer("(R)");
+		return 1;
+	}
+	else if (strncmp(entity, "&trade;", 7) == 0) {
+		append_buffer("(TM)");
+		return 1;
+	}
+	else if (strncmp(entity, "&mdash;", 7) == 0) {
+		append_buffer("--");
+		return 1;
+	}
+	else if (strncmp(entity, "&ndash;", 7) == 0) {
+		append_buffer("-");
+		return 1;
+	}
+	else if (strncmp(entity, "&bull;", 6) == 0) {
+		append_buffer("*");
+		return 1;
+	}
+	else if (entity[0] == '&' && entity[strlen(entity) - 1] == ';') {
+		return 1;
+	}
+	return 0;
+}
+
+static int
+process_html_tag(char** pos_ptr)
+{
+	char* pos = *pos_ptr;
+	
+	if (*pos != '<') {
+		return 0;
+	}
+	
+	char* tag_close = strchr(pos, '>');
+	if (!tag_close) {
+		return 0;
+	}
+	
+	size_t tag_len = (size_t)(tag_close - pos + 1);
+	
+	char html_tag_name[32];
+	char* p = pos + 1;
+	
+	int is_closing = 0;
+	if (*p == '/') {
+		is_closing = 1;
+		p++;
+	}
+	
+	char* name_start = p;
+	while (*p && *p != ' ' && *p != '\t' && *p != '/' && *p != '>') {
+		p++;
+	}
+	
+	int name_len = (int)(p - name_start);
+	if (name_len <= 0 || name_len >= 32) {
+		return 0;
+	}
+	
+	strncpy(html_tag_name, name_start, name_len);
+	html_tag_name[name_len] = 0;
+	
+	for (int i = 0; html_tag_name[i]; i++) {
+		html_tag_name[i] = (char)tolower((unsigned char)html_tag_name[i]);
+	}
+	
+	if (strcmp(html_tag_name, "b") == 0 || strcmp(html_tag_name, "strong") == 0) {
+		if (is_closing) {
+			if (bold_state > 0) {
+				append_buffer("\\b0 ");
+				bold_state--;
+			}
+		}
+		else {
+			append_buffer("\\b1 ");
+			bold_state++;
+		}
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	if (strcmp(html_tag_name, "i") == 0 || strcmp(html_tag_name, "em") == 0) {
+		if (is_closing) {
+			if (italic_state > 0) {
+				append_buffer("\\i0 ");
+				italic_state--;
+			}
+		}
+		else {
+			append_buffer("\\i1 ");
+			italic_state++;
+		}
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	if (strcmp(html_tag_name, "u") == 0) {
+		if (is_closing) {
+			if (html_u_state > 0) {
+				append_buffer("\\ul0 ");
+				html_u_state--;
+			}
+		}
+		else {
+			append_buffer("\\ul ");
+			html_u_state++;
+		}
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	if (strcmp(html_tag_name, "s") == 0 || strcmp(html_tag_name, "strike") == 0 || strcmp(html_tag_name, "del") == 0) {
+		if (is_closing) {
+			if (strike_state > 0) {
+				append_buffer("\\strike0 ");
+				strike_state--;
+			}
+		}
+		else {
+			append_buffer("\\strike ");
+			strike_state++;
+		}
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	if (strcmp(html_tag_name, "code") == 0) {
+		if (is_closing) {
+			if (code_state > 0) {
+				append_buffer("}");
+				code_state--;
+			}
+		}
+		else {
+			append_buffer("{\\f1\\highlight2 ");
+			code_state++;
+		}
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	if (strcmp(html_tag_name, "sub") == 0) {
+		if (is_closing) {
+			append_buffer("\\nosupersub ");
+		}
+		else {
+			append_buffer("\\sub ");
+		}
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	if (strcmp(html_tag_name, "sup") == 0) {
+		if (is_closing) {
+			append_buffer("\\nosupersub ");
+		}
+		else {
+			append_buffer("\\super ");
+		}
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	if (strcmp(html_tag_name, "br") == 0) {
+		append_buffer("\\par\n");
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	if (strcmp(html_tag_name, "hr") == 0) {
+		append_buffer("\\pard\\sa150\\sl0\\slmult0 {\\strike \\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab\\tab} \\par\\pard\n");
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	if (strcmp(html_tag_name, "a") == 0) {
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	if (strcmp(html_tag_name, "/a") == 0) {
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	if (strcmp(html_tag_name, "blockquote") == 0) {
+		if (is_closing) {
+			append_buffer("}\\pard\n");
+		}
+		else {
+			append_buffer("{\\pard\\li360\\ri360\\cf3\\highlight2 ");
+		}
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	if (strcmp(html_tag_name, "p") == 0 || strcmp(html_tag_name, "div") == 0 ||
+		 strcmp(html_tag_name, "h1") == 0 || strcmp(html_tag_name, "h2") == 0 ||
+		 strcmp(html_tag_name, "h3") == 0 || strcmp(html_tag_name, "h4") == 0 ||
+		 strcmp(html_tag_name, "h5") == 0 || strcmp(html_tag_name, "h6") == 0 ||
+		 strcmp(html_tag_name, "li") == 0) {
+		if (is_closing) {
+			append_buffer("\\par\n");
+		}
+		*pos_ptr = pos + tag_len;
+		return 1;
+	}
+	
+	return 0;
+}
 
 static void
 append_buffer_line(char* line)
@@ -465,6 +710,27 @@ append_buffer_line(char* line)
 	char* pos = line;
 	while (*pos != 0)
 	{
+		// Handle HTML entities first
+		if (*pos == '&' && strchr(pos, ';') != NULL) {
+			const char* entity_end = strchr(pos, ';');
+			size_t entity_len = (size_t)(entity_end - pos + 1);
+			
+			if (entity_len < 32) {
+				char saved_char = *(pos + entity_len);
+				*(pos + entity_len) = 0;
+				if (append_html_entity(pos)) {
+					*(pos + entity_len) = saved_char;
+					pos += entity_len;
+					continue;
+				}
+				*(pos + entity_len) = saved_char;
+			}
+		}
+		
+		if (process_html_tag(&pos)) {
+			continue;
+		}
+		
 		if (*pos == '\\' && *(pos + 1) != 0) {
 			char next = *(pos + 1);
 			if (next == '\\' || next == '`' || next == '*' || next == '_' ||
