@@ -184,6 +184,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			return TRUE;
 		}
 		break;
+	case WM_LBUTTONDOWN:
+		// Hide caret when clicking on text area
+		HideCaret(hRichEdit);
+		break;
 	case WM_KEYDOWN:
 		switch (wParam)
 		{
