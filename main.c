@@ -41,6 +41,7 @@ char* pFileView;
 
 DWORD lastEscapeTime = 0;
 int escapeCount = 0;
+BOOL bIsSelecting = FALSE;
 
 // Forward declarations
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -164,6 +165,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		}
 		SendMessage(hRichEdit, EM_SETEVENTMASK, 0, ENM_LINK);
 		SendMessage(hRichEdit, EM_SETEDITSTYLEEX, 0, SES_EX_HANDLEFRIENDLYURL | SES_HYPERLINKTOOLTIPS);
+		// Hide caret for read-only viewer
+		HideCaret(hRichEdit);
+		break;
+	case WM_SETCURSOR:
+		if ((HWND)wParam == hRichEdit)
+		{
+			// Check if user is selecting text (left button is down)
+			if (GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+			{
+				SetCursor(LoadCursor(NULL, IDC_IBEAM));
+			}
+			else
+			{
+				// Use arrow cursor by default
+				SetCursor(LoadCursor(NULL, IDC_ARROW));
+			}
+			return TRUE;
+		}
 		break;
 	case WM_KEYDOWN:
 		switch (wParam)
