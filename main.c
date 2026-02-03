@@ -1,4 +1,5 @@
 // Markdown Viewer � 2022 by Thomas F�hringer
+// 2026 by dodo
 
 #pragma once
 //#include <SDKDDKVer.h>
@@ -37,6 +38,9 @@ WCHAR szCurrentFile[MAX_PATH] = L"";
 
 DWORD dwFilesize;
 char* pFileView;
+
+DWORD lastEscapeTime = 0;
+int escapeCount = 0;
 
 // Forward declarations
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -161,7 +165,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		SendMessage(hRichEdit, EM_SETEVENTMASK, 0, ENM_LINK);
 		SendMessage(hRichEdit, EM_SETEDITSTYLEEX, 0, SES_EX_HANDLEFRIENDLYURL | SES_HYPERLINKTOOLTIPS);
 		break;
-
+	case WM_KEYDOWN:
+		switch (wParam)
+		{
+		case VK_SPACE:
+			SendMessage(hRichEdit, WM_VSCROLL, SB_PAGEDOWN, 0);
+			break;
+		case VK_ESCAPE:
+		{
+			DWORD currentTime = GetTickCount();
+			if (currentTime - lastEscapeTime < 500 && escapeCount == 1) {
+				PostQuitMessage(0);
+				escapeCount = 0;
+			}
+			else {
+				escapeCount = 1;
+				lastEscapeTime = currentTime;
+			}
+			break;
+		}
+		}
+		break;
 	case WM_COMMAND:
 		switch (LOWORD(wParam))
 		{

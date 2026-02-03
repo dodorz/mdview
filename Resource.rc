@@ -62,10 +62,10 @@ IDR_MENU_BAR MENU
 BEGIN
     POPUP "&File"
     BEGIN
-        MENUITEM "&Open\tCtrl+O",               IDM_FILE_OPEN
-        MENUITEM "&Refresh\tCtrl+R",            IDM_FILE_REFRESH
+        MENUITEM "&Open\tO",               IDM_FILE_OPEN
+        MENUITEM "&Refresh\tR",            IDM_FILE_REFRESH
                 MENUITEM SEPARATOR
-        MENUITEM "&Close\tCtrl+Q",               IDM_FILE_EXIT
+        MENUITEM "&Close\tQ",               IDM_FILE_EXIT
     END
     POPUP "Help"
     BEGIN
@@ -88,8 +88,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,0,1
- PRODUCTVERSION 1,0,0,1
+ FILEVERSION 1,0,1,2
+ PRODUCTVERSION 1,0,1,2
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -104,14 +104,13 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "TODO: <Company name>"
             VALUE "FileDescription", "TODO: <File description>"
-            VALUE "FileVersion", "1.0.0.1"
+            VALUE "FileVersion", "1.0.1.2"
             VALUE "InternalName", "MarkdownViewer.exe"
-            VALUE "LegalCopyright", "Copyright (C) 2022"
+            VALUE "LegalCopyright", "Copyright (C) 2026"
             VALUE "OriginalFilename", "MarkdownViewer.exe"
             VALUE "ProductName", "TODO: <Product name>"
-            VALUE "ProductVersion", "1.0.0.1"
+            VALUE "ProductVersion", "1.0.1.2"
         END
     END
     BLOCK "VarFileInfo"
