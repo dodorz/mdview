@@ -64,7 +64,7 @@ append_buffer(const char* str)
 		buffer_size = buffer_size * 2 + length;
 		rtf = realloc(rtf, buffer_size);
 	}
-	strcat(rtf, str);
+	strcat_s(rtf, buffer_size, str);
 	buffer_left -= strlen(str);
 }
 
@@ -100,13 +100,12 @@ append_image(const char* file_name)
 	FILE* file;
 	char full_path[1024];
 #ifdef _WIN32
-	char full_path_[1024];
-	sprintf(full_path, "%s\\%s", path, file_name);
+	sprintf_s(full_path, sizeof(full_path), "%s\\%s", path, file_name);
 	LPWSTR path_w = toW(full_path);
-	file = _wfopen(path_w, L"rb");
+	if (_wfopen_s(&file, path_w, L"rb") != 0) file = NULL;
 	free(path_w);
 #else
-	sprintf(full_path, "%s/%s", path, file_name);
+	sprintf_s(full_path, sizeof(full_path), "%s/%s", path, file_name);
 	file = fopen(full_path, "rb");
 #endif
 
@@ -552,7 +551,7 @@ process_html_tag(char** pos_ptr)
 		return 0;
 	}
 	
-	strncpy(html_tag_name, name_start, name_len);
+	memcpy(html_tag_name, name_start, (size_t)name_len);
 	html_tag_name[name_len] = 0;
 	
 	for (int i = 0; html_tag_name[i]; i++) {
@@ -927,7 +926,7 @@ output_table_cell(const char* cell, int is_header)
 		cell++;
 
 	char* trimmed = (char*)malloc(strlen(cell) + 1);
-	strcpy(trimmed, cell);
+	strcpy_s(trimmed, strlen(cell) + 1, cell);
 
 	int len = (int)strlen(trimmed);
 	while (len > 0 && trimmed[len - 1] == ' ') {
@@ -953,7 +952,7 @@ process_table_row(const char* line, int is_header, int col_count)
 
 	for (int i = 1; i <= col_count; i++) {
 		char cellx[128];
-		sprintf(cellx, "\\clbrdrt\\brdrw10\\brdrs\\clbrdrl\\brdrw10\\brdrs\\clbrdrb\\brdrw10\\brdrs\\clbrdrr\\brdrw10\\brdrs\\cellx%d ", i * col_width);
+		sprintf_s(cellx, sizeof(cellx), "\\clbrdrt\\brdrw10\\brdrs\\clbrdrl\\brdrw10\\brdrs\\clbrdrb\\brdrw10\\brdrs\\clbrdrr\\brdrw10\\brdrs\\cellx%d ", i * col_width);
 		append_buffer(cellx);
 	}
 
@@ -1117,7 +1116,7 @@ markdown2rtf(const char* md, const char* img_path)
 				char fmt[64];
 				int indent = depth * 360;
 				// Increase indent for nested levels
-				sprintf(fmt, "{\\pard\\li%d\\ri%d\\cf3\\highlight2 ", indent, indent);
+				sprintf_s(fmt, sizeof(fmt), "{\\pard\\li%d\\ri%d\\cf3\\highlight2 ", indent, indent);
 				append_buffer(fmt);
 				in_blockquote = depth;
 			}
@@ -1165,14 +1164,14 @@ markdown2rtf(const char* md, const char* img_path)
 			int indent = (depth + 1) * 360;
 
 			char list_fmt[128];
-			sprintf(list_fmt, "{\\pard\\fi-180\\li%d ", indent);
+			sprintf_s(list_fmt, sizeof(list_fmt), "{\\pard\\fi-180\\li%d ", indent);
 			append_buffer(list_fmt);
 			
-			// Render checkbox: ☐ (U+2610) for unchecked, ☑ (U+2611) for checked
+			// Render checkbox using Unicode code points (U+2610/U+2611)
 			if (task_state == 0)
-				append_buffer("{\\u9744?}\\tab "); // ☐ unchecked
+				append_buffer("{\\u9744?} "); // unchecked
 			else
-				append_buffer("{\\u9745?}\\tab "); // ☑ checked
+				append_buffer("{\\u9745?} "); // checked
 
 			// Skip past "- [ ] " or "- [x] " (marker + space + checkbox + space)
 			append_buffer_line(line + task_marker_pos + 6);
@@ -1188,7 +1187,7 @@ markdown2rtf(const char* md, const char* img_path)
 			int indent = (depth + 1) * 360;
 
 			char list_fmt[128];
-			sprintf(list_fmt, "{\\pard\\fi-180\\li%d ", indent);
+			sprintf_s(list_fmt, sizeof(list_fmt), "{\\pard\\fi-180\\li%d ", indent);
 			append_buffer(list_fmt);
 			append_buffer("\\bullet\\tab ");
 
@@ -1215,10 +1214,10 @@ markdown2rtf(const char* md, const char* img_path)
 			num[ni] = 0;
 
 			char list_fmt[128];
-			sprintf(list_fmt, "{\\pard\\fi-180\\li%d ", indent);
+			sprintf_s(list_fmt, sizeof(list_fmt), "{\\pard\\fi-180\\li%d ", indent);
 			append_buffer(list_fmt);
 			append_buffer(num);
-			append_buffer(".\\tab ");
+			append_buffer(". ");
 
 			append_buffer_line(line + ol_pos + 1);
 			append_buffer("\\par}\n");
@@ -1340,3 +1339,4 @@ markdown2rtf(const char* md, const char* img_path)
 	top_of_page = 1;
 	return rtf;
 }
+
