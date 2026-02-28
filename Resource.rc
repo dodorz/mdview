@@ -131,9 +131,9 @@ CAPTION "About Markdown Viewer"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
     DEFPUSHBUTTON   "OK",IDOK,210,93,50,14
-    LTEXT           "By Thomas Führinger, 2022",IDC_STATIC,50,16,168,16
-    LTEXT           "Version 0.9",IDC_STATIC,50,28,168,16
-    LTEXT           "https://github.com/thomasfuhringer/markdownviewer",IDC_STATIC,50,40,220,16
+    LTEXT           "By dodo (fork of Thomas Fuhringer, 2022), 2026",IDC_STATIC,50,16,168,16
+    LTEXT           "Version 1.0.3",IDC_STATIC,50,28,168,16
+    LTEXT           "https://github.com/dodorz/markdownviewer\r\nFork of: https://github.com/thomasfuhringer/markdownviewer",IDC_STATIC,50,40,220,24
     ICON            IDI_APP,IDC_STATIC,16,16,49,49
 END
 
