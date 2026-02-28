@@ -260,7 +260,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		iClientAreaHeight -= rect.bottom;
 		MoveWindow(hRichEdit, 0, iClientAreaTop, iClientAreaWidth, iClientAreaHeight, TRUE);
 		GetClientRect(hRichEdit, &rect);
-		InflateRect(&rect, -MARGIN, -MARGIN);
+		rect.left += MARGIN;
+		rect.top += MARGIN;
+		rect.right -= MARGIN;
 		SendMessage(hRichEdit, EM_SETRECT, 0, (LPARAM)&rect);
 		break;
 

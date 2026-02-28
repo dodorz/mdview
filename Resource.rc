@@ -110,7 +110,7 @@ BEGIN
             VALUE "LegalCopyright", "Copyright (C) 2026"
             VALUE "OriginalFilename", "MarkdownViewer.exe"
             VALUE "ProductName", "TODO: <Product name>"
-            VALUE "ProductVersion", "1.0.3.0"
+            VALUE "ProductVersion", "1.0.3.2"
         END
     END
     BLOCK "VarFileInfo"
