@@ -105,7 +105,7 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "FileDescription", "TODO: <File description>"
-            VALUE "FileVersion", "1.0.3.1"
+            VALUE "FileVersion", "1.0.3.2"
             VALUE "InternalName", "MarkdownViewer.exe"
             VALUE "LegalCopyright", "Copyright (C) 2026"
             VALUE "OriginalFilename", "MarkdownViewer.exe"
