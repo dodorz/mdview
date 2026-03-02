@@ -1,5 +1,6 @@
 // Convert Markdown to RTF - 2022 by Thomas Fuhringer, released under the terms of the GPL
 // Enhanced with lists, blockquotes, strikethrough, horizontal rules, escape characters, code blocks, and tables
+#define _CRT_SECURE_NO_WARNINGS
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -100,7 +101,6 @@ append_image(const char* file_name)
 	FILE* file;
 	char full_path[1024];
 #ifdef _WIN32
-	char full_path_[1024];
 	sprintf(full_path, "%s\\%s", path, file_name);
 	LPWSTR path_w = toW(full_path);
 	file = _wfopen(path_w, L"rb");

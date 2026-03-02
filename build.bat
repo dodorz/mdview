@@ -5,7 +5,7 @@ REM 示例: build.bat Release x64
 REM        build.bat Debug Win32 /t:Rebuild
 
 REM 设置代码页为 GBK 以正确显示中文（Windows 中文系统默认）
-chcp 936 >nul 2>&1
+::chcp 936 >nul 2>&1
 
 setlocal enabledelayedexpansion
 

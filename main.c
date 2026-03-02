@@ -42,15 +42,18 @@ char* pFileView;
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 INT_PTR CALLBACK About(HWND, UINT, WPARAM, LPARAM);
 char* toU8(const LPWSTR szUTF16);
+LPWSTR toW(const char* strTextUTF8);
 int Scale(int iValue);
 
 BOOL FileOpen(WCHAR* lpszTextFileName);
 void FileOpenDialog();
 BOOL CreateToolBar();
 BOOL CreateStatusBar();
+BOOL App_SaveState();
+BOOL App_RestoreState();
 void ShowLastError(LPCTSTR lpszContext);
 
-int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPTSTR lpCmdLine, _In_ int nCmdShow)
+int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
 {
 	UNREFERENCED_PARAMETER(hPrevInstance);
 	UNREFERENCED_PARAMETER(lpCmdLine);
@@ -127,12 +130,11 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 			DispatchMessage(&msg);
 		}
 	}
-	return msg.wParam;
+	return (int)msg.wParam;
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-	RECT            rcClient;
 	int				iClientAreaTop;
 	int				iClientAreaHeight;
 	int             iClientAreaWidth;
@@ -213,11 +215,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		MoveWindow(hRichEdit, 0, iClientAreaTop, iClientAreaWidth, iClientAreaHeight, TRUE);
 		GetClientRect(hRichEdit, &rect);
 		InflateRect(&rect, -MARGIN, -MARGIN);
-		SendMessage(hRichEdit, EM_SETRECT, 0, &rect);
+		SendMessage(hRichEdit, EM_SETRECT, 0, (LPARAM)&rect);
 		break;
 
 	case WM_DROPFILES: {
-		HDROP hDrop = wParam;
+		HDROP hDrop = (HDROP)wParam;
 		TCHAR szNextFile[MAX_PATH];
 		if (DragQueryFile(hDrop, 0, szNextFile, MAX_PATH) > 0) {
 			FileOpen(szNextFile);
@@ -229,14 +231,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		switch (((LPNMHDR)lParam)->code) {
 		case EN_LINK: {
 			ENLINK* enLinkInfo = (ENLINK*)lParam;
-			TEXTRANGE tr;
+			TEXTRANGEW tr;
 			if (enLinkInfo->msg == WM_LBUTTONUP) {
 				//LONG len_link = enLinkInfo->chrg.cpMax - enLinkInfo->chrg.cpMin;
-				TCHAR szLink[1024];
+				WCHAR szLink[1024];
 				tr.chrg = enLinkInfo->chrg;
 				tr.lpstrText = szLink;
 
-				SendMessage(hRichEdit, EM_GETTEXTRANGE, 0, &tr);
+				SendMessage(hRichEdit, EM_GETTEXTRANGE, 0, (LPARAM)&tr);
 				ShellExecuteW(NULL, L"open", szLink, NULL, NULL, SW_SHOWNORMAL);
 			}
 			break;
@@ -294,38 +296,47 @@ FileOpen(WCHAR* lpszTextFileName)
 		szCurrentFile[0] = L'\0';
 		SendMessageA(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)"");
 		SendMessageW(hMainWindow, WM_SETTEXT, (WPARAM)0, (LPARAM)szAppName);
-		return 0;
+		return FALSE;
 	}
 
 	hFile = CreateFileW(lpszTextFileName, GENERIC_READ, FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hFile == INVALID_HANDLE_VALUE)
 	{
-		ShowLastError("Cannot open file.");
-		return 0;
+		ShowLastError(L"Cannot open file.");
+		return FALSE;
 	}
 
 	dwFilesize = GetFileSize(hFile, NULL);
 	if (dwFilesize == 0) {
-		ShowLastError("Invalid file.");
-		return 0;
+		ShowLastError(L"Invalid file.");
+		CloseHandle(hFile);
+		return FALSE;
 	}
 
 	hMap = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
 	pFileView = MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
 
 	if (pFileView == NULL) {
-		ShowLastError("Cannot open file.");
-		return 0;
+		ShowLastError(L"Cannot open file.");
+		CloseHandle(hMap);
+		CloseHandle(hFile);
+		return FALSE;
 	}
 
 	if (GetFullPathNameW(lpszTextFileName, PATH_BUFFER_SIZE, lpBufferPathWithFile, &lpFilePart) == 0) {
-		ShowLastError("Invalid file.");
-		return 0;
+		ShowLastError(L"Invalid file.");
+		UnmapViewOfFile(pFileView);
+		CloseHandle(hMap);
+		CloseHandle(hFile);
+		return FALSE;
 	}
 	memcpy(lpBufferPathWithoutFile, lpBufferPathWithFile, PATH_BUFFER_SIZE);
 	if (PathCchRemoveFileSpec(lpBufferPathWithoutFile, PATH_BUFFER_SIZE) != S_OK) {
-		ShowLastError("Invalid file.");
-		return 0;
+		ShowLastError(L"Invalid file.");
+		UnmapViewOfFile(pFileView);
+		CloseHandle(hMap);
+		CloseHandle(hFile);
+		return FALSE;
 	}
 	lstrcpyW(szCurrentFile, lpszTextFileName);
 
@@ -343,6 +354,9 @@ FileOpen(WCHAR* lpszTextFileName)
 	char* pRTF = markdown2rtf(md, path);
 	if (pRTF == NULL) {
 		SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Could not convert Markdown.");
+		free(md);
+		free(path);
+		return FALSE;
 	}
 
 	TCHAR szTitle[MAX_PATH + 20];
@@ -355,6 +369,7 @@ FileOpen(WCHAR* lpszTextFileName)
 	free(md);
 	free(pRTF);
 	free(path);
+	return TRUE;
 }
 
 void
@@ -393,7 +408,6 @@ BOOL CreateToolBar()
 
 	const DWORD buttonStyles = BTNS_AUTOSIZE;
 	HIMAGELIST hImageList = NULL;
-	RECT rcToolBar;
 
 	HWND hWndToolbar = CreateWindowEx(0, TOOLBARCLASSNAME, NULL,
 		WS_CHILD | TBSTYLE_WRAPABLE /*| TBSTYLE_LIST | TBSTYLE_EX_MIXEDBUTTONS */, 0, 0, 0, 0,
@@ -463,13 +477,6 @@ BOOL CreateStatusBar()
 
 	int iPart[3] = { 200, 250, -1 };
 	SendMessage(hStatusBar, SB_SETPARTS, (WPARAM)3, (LPARAM)iPart);
-
-	RECT rcClient;
-	LPINT lpParts = NULL;
-	PINT pParts = NULL;
-
-	int nWidth = 0;
-	int nParts = 1;
 
 	return TRUE;
 }
@@ -549,18 +556,23 @@ toU8(const LPWSTR szUTF16)
 {
 	if (szUTF16 == NULL)
 		return NULL;
-	if (*szUTF16 == L'\0')
-		return '\0';
+	if (*szUTF16 == L'\0') {
+		char* empty = (char*)malloc(1);
+		if (empty != NULL) {
+			empty[0] = '\0';
+		}
+		return empty;
+	}
 
 	int cbUTF8 = WideCharToMultiByte(CP_UTF8, 0, szUTF16, -1, NULL, 0, NULL, NULL);
 	if (cbUTF8 == 0) {
-		ShowLastError("Sting converson to wide character failed.");
+		ShowLastError(L"String conversion to UTF-8 failed.");
 		return NULL;
 	}
 	char* strTextUTF8 = (char*)malloc(cbUTF8);
 	int result = WideCharToMultiByte(CP_UTF8, 0, szUTF16, -1, strTextUTF8, cbUTF8, NULL, NULL);
 	if (result == 0) {
-		ShowLastError("Sting converson to wide character failed.");
+		ShowLastError(L"String conversion to UTF-8 failed.");
 		return NULL;
 	}
 	return strTextUTF8;
@@ -572,18 +584,23 @@ toW(const char* strTextUTF8)
 {
 	if (strTextUTF8 == NULL)
 		return NULL;
-	if (*strTextUTF8 == '\0')
-		return L'\0';
+	if (*strTextUTF8 == '\0') {
+		LPWSTR empty = (LPWSTR)malloc(sizeof(WCHAR));
+		if (empty != NULL) {
+			empty[0] = L'\0';
+		}
+		return empty;
+	}
 
 	int cchUTF16 = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, strTextUTF8, -1, NULL, 0); // request buffer size
 	if (cchUTF16 == 0) {
-		ShowLastError("Sting converson to wide character failed.");
+		ShowLastError(L"String conversion to wide character failed.");
 		return NULL;
 	}
 	LPWSTR szUTF16 = (LPWSTR)malloc(cchUTF16 * sizeof(WCHAR));
 	int result = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, strTextUTF8, -1, szUTF16, cchUTF16);
 	if (result == 0) {
-		ShowLastError("Sting converson to wide character failed.");
+		ShowLastError(L"String conversion to wide character failed.");
 		return NULL;
 	}
 	return szUTF16;
