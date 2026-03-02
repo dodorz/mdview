@@ -28,15 +28,23 @@ for /f "tokens=2" %%i in ('tasklist ^| findstr /i "MarkdownViewer.exe"') do (
 echo Continuing with build...
 echo.
 
-
-
 REM 默认配置
 set "CONFIG=Release"
 set "PLATFORM=x64"
+set "MSBUILD_ARGS="
 
 REM 解析参数
 if not "%~1"=="" set "CONFIG=%~1"
 if not "%~2"=="" set "PLATFORM=%~2"
+if not "%~1"=="" shift
+if not "%~1"=="" shift
+
+:collect_extra_args
+if "%~1"=="" goto args_done
+set "MSBUILD_ARGS=%MSBUILD_ARGS% %~1"
+shift
+goto collect_extra_args
+:args_done
 
 REM 检查解决方案文件是否存在
 if not exist "MarkdownViewer.sln" (
@@ -47,20 +55,12 @@ if not exist "MarkdownViewer.sln" (
     exit /b 1
 )
 
-REM 查找 Visual Studio Build Tools
+REM 查找 Visual Studio 开发命令环境
 set "VS_PATH="
-if exist "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat" (
-    set "VS_PATH=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"
-    echo Found Visual Studio 2022 Build Tools
-) else if exist "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\Common7\Tools\VsDevCmd.bat" (
-    set "VS_PATH=C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\Common7\Tools\VsDevCmd.bat"
-    echo Found Visual Studio 2019 Build Tools
-) else if exist "C:\Program Files (x86)\Microsoft Visual Studio\2017\BuildTools\Common7\Tools\VsDevCmd.bat" (
-    set "VS_PATH=C:\Program Files (x86)\Microsoft Visual Studio\2017\BuildTools\Common7\Tools\VsDevCmd.bat"
-    echo Found Visual Studio 2017 Build Tools
-) else (
-    echo Error: Visual Studio Build Tools not found
-    echo Please ensure Visual Studio Build Tools is installed
+call :find_vsdevcmd
+if errorlevel 1 (
+    echo Error: Visual Studio development environment not found
+    echo Please ensure Visual Studio Build Tools or Visual Studio with C++ workload is installed
     popd
     exit /b 1
 )
@@ -89,12 +89,13 @@ echo ========================================
 echo Configuration: %CONFIG%
 echo Platform: %PLATFORM%
 echo Solution: MarkdownViewer.sln
+echo Toolchain: %VS_PATH%
 echo ========================================
 echo.
 
 REM 构建项目
 echo Starting build...
-msbuild "MarkdownViewer.sln" /p:Configuration="%CONFIG%" /p:Platform="%PLATFORM%" %*
+msbuild "MarkdownViewer.sln" /p:Configuration="%CONFIG%" /p:Platform="%PLATFORM%"%MSBUILD_ARGS%
 
 if %ERRORLEVEL% EQU 0 (
     echo.
@@ -113,3 +114,55 @@ if %ERRORLEVEL% EQU 0 (
 
 popd
 endlocal
+exit /b 0
+
+:find_vsdevcmd
+set "VSWHERE_EXE="
+set "VS_INSTANCE_PATH="
+
+if defined VSWHERE_PATH (
+    if exist "%VSWHERE_PATH%" (
+        set "VSWHERE_EXE=%VSWHERE_PATH%"
+    )
+)
+
+if not defined VSWHERE_EXE (
+    if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
+        set "VSWHERE_EXE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+    )
+)
+
+if not defined VS_REQUIREMENTS (
+    set "VS_REQUIREMENTS=-requires Microsoft.Component.MSBuild -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+)
+
+if defined VSWHERE_EXE (
+    for /f "usebackq delims=" %%I in (`"!VSWHERE_EXE!" -latest -products * !VS_REQUIREMENTS! -property installationPath`) do (
+        set "VS_INSTANCE_PATH=%%I"
+    )
+    if defined VS_INSTANCE_PATH (
+        if exist "!VS_INSTANCE_PATH!\Common7\Tools\VsDevCmd.bat" (
+            set "VS_PATH=!VS_INSTANCE_PATH!\Common7\Tools\VsDevCmd.bat"
+            echo Found Visual Studio instance via vswhere: !VS_INSTANCE_PATH!
+            exit /b 0
+        )
+    )
+)
+
+REM 回退到硬编码路径，兼容旧环境
+for %%P in (
+    "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"
+    "C:\Program Files\Microsoft Visual Studio\2019\BuildTools\Common7\Tools\VsDevCmd.bat"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\Common7\Tools\VsDevCmd.bat"
+    "C:\Program Files\Microsoft Visual Studio\2017\BuildTools\Common7\Tools\VsDevCmd.bat"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2017\BuildTools\Common7\Tools\VsDevCmd.bat"
+) do (
+    if exist %%~P (
+        set "VS_PATH=%%~P"
+        echo Found Visual Studio Build Tools at %%~P
+        exit /b 0
+    )
+)
+
+exit /b 1
