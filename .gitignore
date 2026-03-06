@@ -1,6 +1,6 @@
-# Visual Studio / Visual C++ 项目忽略文件
+# Visual Studio / Visual C++ Project ignore file
 
-## 构建输出目录
+## Build output dirs
 [Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/
@@ -19,7 +19,7 @@ bld/
 ## Test Case
 [Tt]est/
 
-## Visual Studio 缓存/选项目录
+## Visual Studio Cache/Project dirs
 .vs/
 .vscode/
 *.suo
@@ -27,7 +27,7 @@ bld/
 *.userosscache
 *.sln.docstates
 
-## Visual Studio 生成的文件
+## Visual Studio Generated files
 *.aps
 *.pch
 *.vspscc
@@ -36,7 +36,7 @@ bld/
 *.vspx
 *.sap
 
-## Visual Studio 临时文件
+## Visual Studio Temporary files    
 *.tmp
 *.temp
 *.log
@@ -44,7 +44,7 @@ bld/
 *.lastbuildstate
 *.unsuccessfulbuild
 
-## 编译中间文件
+## Compilation intermediate files
 *.obj
 *.iobj
 *.pdb
@@ -55,7 +55,7 @@ bld/
 *.idb
 *.pch
 
-## 可执行文件和库
+## Executable files and libraries
 *.exe
 *.dll
 *.lib
@@ -63,17 +63,17 @@ bld/
 *.so
 *.dylib
 
-## 静态分析
+## Static analysis
 *.sdf
 *.opensdf
 *.db
 *.opendb
 
-## Visual Studio 工具
+## Visual Studio Tools files
 *.VC.db
 *.VC.VC.opendb
 
-## 其他
+## Other files
 *.cache
 *.bak
 *.swp
@@ -81,5 +81,6 @@ bld/
 .DS_Store
 Thumbs.db
 
-## 项目特定（如果需要保留某些文件，可以注释掉）
-# MarkdownViewer.exe  # 如果不想忽略编译后的 exe，取消注释这行
+# Other IDE
+## Trae
+.trae/

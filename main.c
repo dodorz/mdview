@@ -1,12 +1,11 @@
-// Markdown Viewer � 2022 by Thomas F�hringer
+// Markdown Viewer - 2022 by Thomas Fuhringer
+// 2026 by dodo
 
 #pragma once
 //#include <SDKDDKVer.h>
 #include <windows.h>
-#include <objbase.h>
 #include <Commctrl.h>
 #include <RichEdit.h>
-#include <RichOle.h>
 #include <Shellapi.h>
 #include <shlwapi.h>
 #include <pathcch.h>
@@ -37,72 +36,30 @@ HWND hRichEdit;
 HWND hStatusBar;
 WCHAR szCurrentFile[MAX_PATH] = L"";
 
-static const DWORD ESC_DOUBLE_PRESS_INTERVAL_MS = 600;
-static ULONGLONG g_lastEscPressTimestamp = 0;
-
 DWORD dwFilesize;
 char* pFileView;
 
-typedef struct _SimpleRichEditOleCallback {
-	IRichEditOleCallback iface;
-	LONG refCount;
-} SimpleRichEditOleCallback;
-
-static HRESULT STDMETHODCALLTYPE OleCb_QueryInterface(IRichEditOleCallback* This, REFIID riid, void** ppvObject);
-static ULONG STDMETHODCALLTYPE OleCb_AddRef(IRichEditOleCallback* This);
-static ULONG STDMETHODCALLTYPE OleCb_Release(IRichEditOleCallback* This);
-static HRESULT STDMETHODCALLTYPE OleCb_GetNewStorage(IRichEditOleCallback* This, LPSTORAGE* lplpstg);
-static HRESULT STDMETHODCALLTYPE OleCb_GetInPlaceContext(IRichEditOleCallback* This, LPOLEINPLACEFRAME* lplpFrame, LPOLEINPLACEUIWINDOW* lplpDoc, LPOLEINPLACEFRAMEINFO lpFrameInfo);
-static HRESULT STDMETHODCALLTYPE OleCb_ShowContainerUI(IRichEditOleCallback* This, BOOL fShow);
-static HRESULT STDMETHODCALLTYPE OleCb_QueryInsertObject(IRichEditOleCallback* This, LPCLSID pclsid, LPSTORAGE pstg, LONG cp);
-static HRESULT STDMETHODCALLTYPE OleCb_DeleteObject(IRichEditOleCallback* This, LPOLEOBJECT poleobj);
-static HRESULT STDMETHODCALLTYPE OleCb_QueryAcceptData(IRichEditOleCallback* This, LPDATAOBJECT pdataobj, CLIPFORMAT* pcfFormat, DWORD reco, BOOL fReally, HGLOBAL hMetaPict);
-static HRESULT STDMETHODCALLTYPE OleCb_ContextSensitiveHelp(IRichEditOleCallback* This, BOOL fEnterMode);
-static HRESULT STDMETHODCALLTYPE OleCb_GetClipboardData(IRichEditOleCallback* This, CHARRANGE* lpchrg, DWORD reco, LPDATAOBJECT* lplpdataobj);
-static HRESULT STDMETHODCALLTYPE OleCb_GetDragDropEffect(IRichEditOleCallback* This, BOOL fDrag, DWORD grfKeyState, LPDWORD pdwEffect);
-static HRESULT STDMETHODCALLTYPE OleCb_GetContextMenu(IRichEditOleCallback* This, WORD seltype, LPOLEOBJECT lpoleobj, CHARRANGE* lpchrg, HMENU* lphmenu);
-
-static IRichEditOleCallbackVtbl g_richEditOleCallbackVtbl = {
-	OleCb_QueryInterface,
-	OleCb_AddRef,
-	OleCb_Release,
-	OleCb_GetNewStorage,
-	OleCb_GetInPlaceContext,
-	OleCb_ShowContainerUI,
-	OleCb_QueryInsertObject,
-	OleCb_DeleteObject,
-	OleCb_QueryAcceptData,
-	OleCb_ContextSensitiveHelp,
-	OleCb_GetClipboardData,
-	OleCb_GetDragDropEffect,
-	OleCb_GetContextMenu
-};
-
-static SimpleRichEditOleCallback g_richEditOleCallback = { { &g_richEditOleCallbackVtbl }, 1 };
+static const DWORD ESC_DOUBLE_PRESS_INTERVAL_MS = 600;
+static ULONGLONG g_lastEscPressTimestamp = 0;
 
 // Forward declarations
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 INT_PTR CALLBACK About(HWND, UINT, WPARAM, LPARAM);
 char* toU8(const LPWSTR szUTF16);
-LPWSTR toW(const char* strTextUTF8);
 int Scale(int iValue);
 
 BOOL FileOpen(WCHAR* lpszTextFileName);
 void FileOpenDialog();
 BOOL CreateToolBar();
 BOOL CreateStatusBar();
+void ShowLastError(LPCTSTR lpszContext);
 BOOL App_SaveState();
 BOOL App_RestoreState();
-void ShowLastError(LPCTSTR lpszContext);
-BOOL SetRichEditRtf(HWND hEdit, const char* rtfText);
-BOOL InsertMarkdownImages(HWND hEdit, const char* md, const WCHAR* baseDir);
 
-int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
+int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nCmdShow)
 {
 	UNREFERENCED_PARAMETER(hPrevInstance);
 	UNREFERENCED_PARAMETER(lpCmdLine);
-
-	HRESULT oleInit = OleInitialize(NULL);
 
 	SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
 
@@ -188,9 +145,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			DispatchMessage(&msg);
 		}
 	}
-	if (SUCCEEDED(oleInit)) {
-		OleUninitialize();
-	}
 	return (int)msg.wParam;
 }
 
@@ -221,11 +175,37 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			ShowLastError(L"RichEdit Creation Failed!");
 			return 0;
 		}
-		SendMessage(hRichEdit, EM_SETOLECALLBACK, 0, (LPARAM)&g_richEditOleCallback.iface);
 		SendMessage(hRichEdit, EM_SETEVENTMASK, 0, ENM_LINK);
 		SendMessage(hRichEdit, EM_SETEDITSTYLEEX, 0, SES_EX_HANDLEFRIENDLYURL | SES_HYPERLINKTOOLTIPS);
+		// Hide caret for read-only viewer
+		HideCaret(hRichEdit);
 		break;
-
+	case WM_SETCURSOR:
+		if ((HWND)wParam == hRichEdit)
+		{
+			// Check if user is selecting text (left button is down)
+			if (GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+			{
+				SetCursor(LoadCursor(NULL, IDC_IBEAM));
+			}
+			else
+			{
+				// Use arrow cursor by default
+				SetCursor(LoadCursor(NULL, IDC_ARROW));
+			}
+			return TRUE;
+		}
+		break;
+	case WM_LBUTTONDOWN:
+		// Hide caret when clicking on text area
+		HideCaret(hRichEdit);
+		break;
+	case WM_KEYDOWN:
+		if (wParam == VK_SPACE)
+		{
+			SendMessage(hRichEdit, WM_VSCROLL, SB_PAGEDOWN, 0);
+		}
+		break;
 	case WM_COMMAND:
 		switch (LOWORD(wParam))
 		{
@@ -276,7 +256,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		iClientAreaHeight -= rect.bottom;
 		MoveWindow(hRichEdit, 0, iClientAreaTop, iClientAreaWidth, iClientAreaHeight, TRUE);
 		GetClientRect(hRichEdit, &rect);
-		InflateRect(&rect, -MARGIN, -MARGIN);
+		rect.left += MARGIN;
+		rect.top += MARGIN;
+		rect.right -= MARGIN;
 		SendMessage(hRichEdit, EM_SETRECT, 0, (LPARAM)&rect);
 		break;
 
@@ -293,10 +275,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		switch (((LPNMHDR)lParam)->code) {
 		case EN_LINK: {
 			ENLINK* enLinkInfo = (ENLINK*)lParam;
-			TEXTRANGEW tr;
+			TEXTRANGE tr;
 			if (enLinkInfo->msg == WM_LBUTTONUP) {
 				//LONG len_link = enLinkInfo->chrg.cpMax - enLinkInfo->chrg.cpMin;
-				WCHAR szLink[1024];
+				TCHAR szLink[1024];
 				tr.chrg = enLinkInfo->chrg;
 				tr.lpstrText = szLink;
 
@@ -345,6 +327,9 @@ BOOL
 FileOpen(WCHAR* lpszTextFileName)
 {
 	HANDLE hFile, hMap;
+	SETTEXTEX se;
+	se.codepage = 65001;// CP_ACP;
+	se.flags = ST_DEFAULT;
 
 	WCHAR  lpBufferPathWithFile[PATH_BUFFER_SIZE] = L"";
 	WCHAR  lpBufferPathWithoutFile[PATH_BUFFER_SIZE] = L"";
@@ -353,23 +338,22 @@ FileOpen(WCHAR* lpszTextFileName)
 	if (lpszTextFileName == NULL)
 	{
 		szCurrentFile[0] = L'\0';
-		SetWindowTextW(hRichEdit, L"");
+		SendMessageA(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)"");
 		SendMessageW(hMainWindow, WM_SETTEXT, (WPARAM)0, (LPARAM)szAppName);
-		return FALSE;
+		return 0;
 	}
 
 	hFile = CreateFileW(lpszTextFileName, GENERIC_READ, FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hFile == INVALID_HANDLE_VALUE)
 	{
 		ShowLastError(L"Cannot open file.");
-		return FALSE;
+		return 0;
 	}
 
 	dwFilesize = GetFileSize(hFile, NULL);
 	if (dwFilesize == 0) {
 		ShowLastError(L"Invalid file.");
-		CloseHandle(hFile);
-		return FALSE;
+		return 0;
 	}
 
 	hMap = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
@@ -377,25 +361,17 @@ FileOpen(WCHAR* lpszTextFileName)
 
 	if (pFileView == NULL) {
 		ShowLastError(L"Cannot open file.");
-		CloseHandle(hMap);
-		CloseHandle(hFile);
-		return FALSE;
+		return 0;
 	}
 
 	if (GetFullPathNameW(lpszTextFileName, PATH_BUFFER_SIZE, lpBufferPathWithFile, &lpFilePart) == 0) {
 		ShowLastError(L"Invalid file.");
-		UnmapViewOfFile(pFileView);
-		CloseHandle(hMap);
-		CloseHandle(hFile);
-		return FALSE;
+		return 0;
 	}
 	memcpy(lpBufferPathWithoutFile, lpBufferPathWithFile, PATH_BUFFER_SIZE);
 	if (PathCchRemoveFileSpec(lpBufferPathWithoutFile, PATH_BUFFER_SIZE) != S_OK) {
 		ShowLastError(L"Invalid file.");
-		UnmapViewOfFile(pFileView);
-		CloseHandle(hMap);
-		CloseHandle(hFile);
-		return FALSE;
+		return 0;
 	}
 	lstrcpyW(szCurrentFile, lpszTextFileName);
 
@@ -413,9 +389,6 @@ FileOpen(WCHAR* lpszTextFileName)
 	char* pRTF = markdown2rtf(md, path);
 	if (pRTF == NULL) {
 		SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Could not convert Markdown.");
-		free(md);
-		free(path);
-		return FALSE;
 	}
 
 	TCHAR szTitle[MAX_PATH + 20];
@@ -423,10 +396,7 @@ FileOpen(WCHAR* lpszTextFileName)
 	StrCatW(szTitle, lpFilePart);
 	StrCatW(szTitle, L" - ");
 	StrCatW(szTitle, szAppName);
-	if (!SetRichEditRtf(hRichEdit, pRTF)) {
-		SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Failed to load rich text content.");
-	}
-	InsertMarkdownImages(hRichEdit, md, lpBufferPathWithoutFile);
+	SendMessageW(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)pRTF);
 	SendMessageW(hMainWindow, WM_SETTEXT, (WPARAM)0, (LPARAM)szTitle);
 	free(md);
 	free(pRTF);
@@ -540,6 +510,8 @@ BOOL CreateStatusBar()
 	int iPart[3] = { 200, 250, -1 };
 	SendMessage(hStatusBar, SB_SETPARTS, (WPARAM)3, (LPARAM)iPart);
 
+
+
 	return TRUE;
 }
 
@@ -618,23 +590,18 @@ toU8(const LPWSTR szUTF16)
 {
 	if (szUTF16 == NULL)
 		return NULL;
-	if (*szUTF16 == L'\0') {
-		char* empty = (char*)malloc(1);
-		if (empty != NULL) {
-			empty[0] = '\0';
-		}
-		return empty;
-	}
+	if (*szUTF16 == L'\0')
+		return NULL;
 
 	int cbUTF8 = WideCharToMultiByte(CP_UTF8, 0, szUTF16, -1, NULL, 0, NULL, NULL);
 	if (cbUTF8 == 0) {
-		ShowLastError(L"String conversion to UTF-8 failed.");
+		ShowLastError(L"String conversion failed.");
 		return NULL;
 	}
 	char* strTextUTF8 = (char*)malloc(cbUTF8);
 	int result = WideCharToMultiByte(CP_UTF8, 0, szUTF16, -1, strTextUTF8, cbUTF8, NULL, NULL);
 	if (result == 0) {
-		ShowLastError(L"String conversion to UTF-8 failed.");
+		ShowLastError(L"String conversion failed.");
 		return NULL;
 	}
 	return strTextUTF8;
@@ -646,23 +613,18 @@ toW(const char* strTextUTF8)
 {
 	if (strTextUTF8 == NULL)
 		return NULL;
-	if (*strTextUTF8 == '\0') {
-		LPWSTR empty = (LPWSTR)malloc(sizeof(WCHAR));
-		if (empty != NULL) {
-			empty[0] = L'\0';
-		}
-		return empty;
-	}
+	if (*strTextUTF8 == '\0')
+		return NULL;
 
 	int cchUTF16 = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, strTextUTF8, -1, NULL, 0); // request buffer size
 	if (cchUTF16 == 0) {
-		ShowLastError(L"String conversion to wide character failed.");
+		ShowLastError(L"String conversion failed.");
 		return NULL;
 	}
 	LPWSTR szUTF16 = (LPWSTR)malloc(cchUTF16 * sizeof(WCHAR));
 	int result = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, strTextUTF8, -1, szUTF16, cchUTF16);
 	if (result == 0) {
-		ShowLastError(L"String conversion to wide character failed.");
+		ShowLastError(L"String conversion failed.");
 		return NULL;
 	}
 	return szUTF16;
@@ -681,323 +643,4 @@ int Scale(int iValue)
 	return MulDiv(iValue, iDpi, 96);
 }
 
-typedef struct _RTF_STREAM_CTX {
-	const char* data;
-	size_t len;
-	size_t pos;
-} RTF_STREAM_CTX;
 
-static DWORD CALLBACK
-RtfStreamInCallback(DWORD_PTR dwCookie, LPBYTE pbBuff, LONG cb, LONG* pcb)
-{
-	RTF_STREAM_CTX* ctx = (RTF_STREAM_CTX*)dwCookie;
-	if (ctx == NULL || pbBuff == NULL || pcb == NULL) {
-		return 1;
-	}
-
-	size_t remain = (ctx->pos < ctx->len) ? (ctx->len - ctx->pos) : 0;
-	size_t ncopy = (remain < (size_t)cb) ? remain : (size_t)cb;
-	if (ncopy > 0) {
-		memcpy(pbBuff, ctx->data + ctx->pos, ncopy);
-		ctx->pos += ncopy;
-	}
-	*pcb = (LONG)ncopy;
-	return 0;
-}
-
-BOOL
-SetRichEditRtf(HWND hEdit, const char* rtfText)
-{
-	if (hEdit == NULL || rtfText == NULL) {
-		return FALSE;
-	}
-
-	RTF_STREAM_CTX ctx;
-	ctx.data = rtfText;
-	ctx.len = strlen(rtfText);
-	ctx.pos = 0;
-
-	EDITSTREAM es;
-	ZeroMemory(&es, sizeof(es));
-	es.dwCookie = (DWORD_PTR)&ctx;
-	es.pfnCallback = RtfStreamInCallback;
-
-	SendMessage(hEdit, WM_SETREDRAW, FALSE, 0);
-	SetWindowTextW(hEdit, L"");
-	SendMessage(hEdit, EM_STREAMIN, (WPARAM)SF_RTF, (LPARAM)&es);
-	SendMessage(hEdit, WM_SETREDRAW, TRUE, 0);
-	InvalidateRect(hEdit, NULL, TRUE);
-
-	return es.dwError == 0;
-}
-
-static void
-TrimImageTarget(const char* src, char* dst, size_t dstSize)
-{
-	size_t len = strlen(src);
-	size_t start = 0;
-	size_t end = len;
-	while (start < len && (src[start] == ' ' || src[start] == '\t'))
-		start++;
-	while (end > start && (src[end - 1] == ' ' || src[end - 1] == '\t'))
-		end--;
-	if (end > start + 1 && src[start] == '<' && src[end - 1] == '>') {
-		start++;
-		end--;
-	}
-	size_t outLen = end - start;
-	if (outLen >= dstSize)
-		outLen = dstSize - 1;
-	memcpy(dst, src + start, outLen);
-	dst[outLen] = '\0';
-}
-
-static BOOL
-InsertImageAtSelection(HWND hEdit, const WCHAR* imagePath, const WCHAR* altText)
-{
-	IStream* pStream = NULL;
-	HRESULT hr = SHCreateStreamOnFileEx(imagePath, STGM_READ | STGM_SHARE_DENY_NONE, 0, FALSE, NULL, &pStream);
-	if (FAILED(hr) || pStream == NULL)
-		return FALSE;
-
-	RICHEDIT_IMAGE_PARAMETERS rip;
-	ZeroMemory(&rip, sizeof(rip));
-	rip.xWidth = 0;
-	rip.yHeight = 0;
-	rip.Ascent = 0;
-	rip.Type = TA_BASELINE;
-	rip.pwszAlternateText = altText;
-	rip.pIStream = pStream;
-
-	LRESULT inserted = SendMessage(hEdit, EM_INSERTIMAGE, 0, (LPARAM)&rip);
-	pStream->lpVtbl->Release(pStream);
-	return inserted != 0;
-}
-
-BOOL
-InsertMarkdownImages(HWND hEdit, const char* md, const WCHAR* baseDir)
-{
-	if (hEdit == NULL || md == NULL || baseDir == NULL)
-		return FALSE;
-
-	const char* p = md;
-	LONG searchStart = 0;
-	while (*p) {
-		if (p[0] == '!' && p[1] == '[') {
-			const char* labelEnd = strstr(p + 2, "](");
-			if (labelEnd) {
-				const char* urlStart = labelEnd + 2;
-				const char* urlEnd = strstr(urlStart, ")");
-				if (urlEnd) {
-					size_t tokenLen = (size_t)(urlEnd - p + 1);
-					char* token = (char*)malloc(tokenLen + 1);
-					if (token == NULL)
-						return FALSE;
-					memcpy(token, p, tokenLen);
-					token[tokenLen] = '\0';
-
-					size_t altLen = (size_t)(labelEnd - (p + 2));
-					char* alt = (char*)malloc(altLen + 1);
-					if (alt == NULL) {
-						free(token);
-						return FALSE;
-					}
-					memcpy(alt, p + 2, altLen);
-					alt[altLen] = '\0';
-
-					size_t urlLen = (size_t)(urlEnd - urlStart);
-					char* target = (char*)malloc(urlLen + 1);
-					if (target == NULL) {
-						free(token);
-						free(alt);
-						return FALSE;
-					}
-					memcpy(target, urlStart, urlLen);
-					target[urlLen] = '\0';
-
-					char normalized[1024];
-					TrimImageTarget(target, normalized, sizeof(normalized));
-
-					WCHAR* tokenW = toW(token);
-					WCHAR* altW = toW(alt);
-					WCHAR* targetW = toW(normalized);
-					if (tokenW && altW && targetW) {
-						WCHAR fullPath[MAX_PATH * 4];
-						if (PathIsRelativeW(targetW)) {
-							wsprintfW(fullPath, L"%s\\%s", baseDir, targetW);
-						} else {
-							lstrcpyW(fullPath, targetW);
-						}
-
-						FINDTEXTEXW ft;
-						ZeroMemory(&ft, sizeof(ft));
-						ft.chrg.cpMin = searchStart;
-						ft.chrg.cpMax = -1;
-						ft.lpstrText = tokenW;
-
-						LRESULT found = SendMessage(hEdit, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&ft);
-						if (found != -1) {
-							CHARRANGE sel;
-							sel.cpMin = ft.chrgText.cpMin;
-							sel.cpMax = ft.chrgText.cpMax;
-							SendMessage(hEdit, EM_EXSETSEL, 0, (LPARAM)&sel);
-							SendMessageW(hEdit, EM_REPLACESEL, TRUE, (LPARAM)L"");
-
-							sel.cpMin = ft.chrgText.cpMin;
-							sel.cpMax = ft.chrgText.cpMin;
-							SendMessage(hEdit, EM_EXSETSEL, 0, (LPARAM)&sel);
-
-							if (InsertImageAtSelection(hEdit, fullPath, altW)) {
-								searchStart = ft.chrgText.cpMin + 1;
-							} else {
-								SendMessageW(hEdit, EM_REPLACESEL, TRUE, (LPARAM)tokenW);
-								searchStart = ft.chrgText.cpMin + (LONG)lstrlenW(tokenW);
-							}
-						}
-					}
-
-					free(token);
-					free(alt);
-					free(target);
-					free(tokenW);
-					free(altW);
-					free(targetW);
-					p = urlEnd + 1;
-					continue;
-				}
-			}
-		}
-		p++;
-	}
-	return TRUE;
-}
-
-static HRESULT STDMETHODCALLTYPE
-OleCb_QueryInterface(IRichEditOleCallback* This, REFIID riid, void** ppvObject)
-{
-	if (ppvObject == NULL) {
-		return E_POINTER;
-	}
-	*ppvObject = NULL;
-	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IRichEditOleCallback)) {
-		*ppvObject = This;
-		OleCb_AddRef(This);
-		return S_OK;
-	}
-	return E_NOINTERFACE;
-}
-
-static ULONG STDMETHODCALLTYPE
-OleCb_AddRef(IRichEditOleCallback* This)
-{
-	SimpleRichEditOleCallback* self = (SimpleRichEditOleCallback*)This;
-	return (ULONG)InterlockedIncrement(&self->refCount);
-}
-
-static ULONG STDMETHODCALLTYPE
-OleCb_Release(IRichEditOleCallback* This)
-{
-	SimpleRichEditOleCallback* self = (SimpleRichEditOleCallback*)This;
-	return (ULONG)InterlockedDecrement(&self->refCount);
-}
-
-static HRESULT STDMETHODCALLTYPE
-OleCb_GetNewStorage(IRichEditOleCallback* This, LPSTORAGE* lplpstg)
-{
-	UNREFERENCED_PARAMETER(This);
-	LPLOCKBYTES lockBytes = NULL;
-	HRESULT hr = CreateILockBytesOnHGlobal(NULL, TRUE, &lockBytes);
-	if (FAILED(hr)) {
-		return hr;
-	}
-	hr = StgCreateDocfileOnILockBytes(lockBytes, STGM_SHARE_EXCLUSIVE | STGM_CREATE | STGM_READWRITE, 0, lplpstg);
-	lockBytes->lpVtbl->Release(lockBytes);
-	return hr;
-}
-
-static HRESULT STDMETHODCALLTYPE
-OleCb_GetInPlaceContext(IRichEditOleCallback* This, LPOLEINPLACEFRAME* lplpFrame, LPOLEINPLACEUIWINDOW* lplpDoc, LPOLEINPLACEFRAMEINFO lpFrameInfo)
-{
-	UNREFERENCED_PARAMETER(This);
-	UNREFERENCED_PARAMETER(lplpFrame);
-	UNREFERENCED_PARAMETER(lplpDoc);
-	UNREFERENCED_PARAMETER(lpFrameInfo);
-	return E_NOTIMPL;
-}
-
-static HRESULT STDMETHODCALLTYPE
-OleCb_ShowContainerUI(IRichEditOleCallback* This, BOOL fShow)
-{
-	UNREFERENCED_PARAMETER(This);
-	UNREFERENCED_PARAMETER(fShow);
-	return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE
-OleCb_QueryInsertObject(IRichEditOleCallback* This, LPCLSID pclsid, LPSTORAGE pstg, LONG cp)
-{
-	UNREFERENCED_PARAMETER(This);
-	UNREFERENCED_PARAMETER(pclsid);
-	UNREFERENCED_PARAMETER(pstg);
-	UNREFERENCED_PARAMETER(cp);
-	return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE
-OleCb_DeleteObject(IRichEditOleCallback* This, LPOLEOBJECT poleobj)
-{
-	UNREFERENCED_PARAMETER(This);
-	UNREFERENCED_PARAMETER(poleobj);
-	return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE
-OleCb_QueryAcceptData(IRichEditOleCallback* This, LPDATAOBJECT pdataobj, CLIPFORMAT* pcfFormat, DWORD reco, BOOL fReally, HGLOBAL hMetaPict)
-{
-	UNREFERENCED_PARAMETER(This);
-	UNREFERENCED_PARAMETER(pdataobj);
-	UNREFERENCED_PARAMETER(pcfFormat);
-	UNREFERENCED_PARAMETER(reco);
-	UNREFERENCED_PARAMETER(fReally);
-	UNREFERENCED_PARAMETER(hMetaPict);
-	return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE
-OleCb_ContextSensitiveHelp(IRichEditOleCallback* This, BOOL fEnterMode)
-{
-	UNREFERENCED_PARAMETER(This);
-	UNREFERENCED_PARAMETER(fEnterMode);
-	return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE
-OleCb_GetClipboardData(IRichEditOleCallback* This, CHARRANGE* lpchrg, DWORD reco, LPDATAOBJECT* lplpdataobj)
-{
-	UNREFERENCED_PARAMETER(This);
-	UNREFERENCED_PARAMETER(lpchrg);
-	UNREFERENCED_PARAMETER(reco);
-	UNREFERENCED_PARAMETER(lplpdataobj);
-	return E_NOTIMPL;
-}
-
-static HRESULT STDMETHODCALLTYPE
-OleCb_GetDragDropEffect(IRichEditOleCallback* This, BOOL fDrag, DWORD grfKeyState, LPDWORD pdwEffect)
-{
-	UNREFERENCED_PARAMETER(This);
-	UNREFERENCED_PARAMETER(fDrag);
-	UNREFERENCED_PARAMETER(grfKeyState);
-	UNREFERENCED_PARAMETER(pdwEffect);
-	return E_NOTIMPL;
-}
-
-static HRESULT STDMETHODCALLTYPE
-OleCb_GetContextMenu(IRichEditOleCallback* This, WORD seltype, LPOLEOBJECT lpoleobj, CHARRANGE* lpchrg, HMENU* lphmenu)
-{
-	UNREFERENCED_PARAMETER(This);
-	UNREFERENCED_PARAMETER(seltype);
-	UNREFERENCED_PARAMETER(lpoleobj);
-	UNREFERENCED_PARAMETER(lpchrg);
-	UNREFERENCED_PARAMETER(lphmenu);
-	return E_NOTIMPL;
-}
