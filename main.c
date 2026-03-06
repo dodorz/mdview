@@ -201,9 +201,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		HideCaret(hRichEdit);
 		break;
 	case WM_KEYDOWN:
-		if (wParam == VK_SPACE)
+		switch (wParam)
 		{
+		case VK_SPACE:
+		case VK_NEXT: // Page Down
 			SendMessage(hRichEdit, WM_VSCROLL, SB_PAGEDOWN, 0);
+			break;
+		case VK_PRIOR: // Page Up
+			SendMessage(hRichEdit, WM_VSCROLL, SB_PAGEUP, 0);
+			break;
+		case VK_UP:
+			SendMessage(hRichEdit, WM_VSCROLL, SB_LINEUP, 0);
+			break;
+		case VK_DOWN:
+			SendMessage(hRichEdit, WM_VSCROLL, SB_LINEDOWN, 0);
+			break;
+		case VK_HOME:
+			SendMessage(hRichEdit, WM_VSCROLL, SB_TOP, 0);
+			break;
+		case VK_END:
+			SendMessage(hRichEdit, WM_VSCROLL, SB_BOTTOM, 0);
+			break;
 		}
 		break;
 	case WM_COMMAND:
