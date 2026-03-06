@@ -88,8 +88,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,0,1
- PRODUCTVERSION 1,0,0,1
+ FILEVERSION 1,0,0,2
+ PRODUCTVERSION 1,0,0,2
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -104,14 +104,14 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "TODO: <Company name>"
-            VALUE "FileDescription", "TODO: <File description>"
-            VALUE "FileVersion", "1.0.0.1"
-            VALUE "InternalName", "MarkdownViewer.exe"
-            VALUE "LegalCopyright", "Copyright (C) 2022"
-            VALUE "OriginalFilename", "MarkdownViewer.exe"
-            VALUE "ProductName", "TODO: <Product name>"
-            VALUE "ProductVersion", "1.0.0.1"
+            VALUE "CompanyName", "dodo"
+            VALUE "FileDescription", "Markdown Viewer fork (mdview)"
+            VALUE "FileVersion", "1.0.0.2"
+            VALUE "InternalName", "mdview.exe"
+            VALUE "LegalCopyright", "Copyright (C) 2026 dodo"
+            VALUE "OriginalFilename", "mdview.exe"
+            VALUE "ProductName", "Markdown Viewer"
+            VALUE "ProductVersion", "1.0.0.2"
         END
     END
     BLOCK "VarFileInfo"
@@ -126,15 +126,15 @@ END
 // Dialog
 //
 
-IDD_ABOUTBOX DIALOGEX 0, 0, 270, 114
-STYLE DS_SYSMODAL | DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "About Markdown Viewer"
-FONT 8, "MS Shell Dlg", 400, 0, 0x1
+IDD_ABOUTBOX DIALOGEX 0, 0, 270, 150
+STYLE DS_SYSMODAL | DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About mdview"
+FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
-    DEFPUSHBUTTON   "OK",IDOK,210,93,50,14
-    LTEXT           "By Thomas Führinger, 2022",IDC_STATIC,50,16,168,16
-    LTEXT           "Version 0.9",IDC_STATIC,50,28,168,16
-    LTEXT           "https://github.com/thomasfuhringer/markdownviewer",IDC_STATIC,50,40,220,16
+    DEFPUSHBUTTON   "OK",IDOK,210,120,50,14
+    LTEXT           "By dodo, 2026 (forked from Thomas Fuhringer's original project)",IDC_STATIC,50,16,188,16
+    LTEXT           "Version 1.0.0.2",IDC_STATIC,50,38,188,16
+    LTEXT           "https://github.com/dodrz/markdownviewer (forked from https://github.com/thomasfuhringer/markdownviewer)",IDC_STATIC,50,60,220,16
     ICON            IDI_APP,IDC_STATIC,16,16,49,49
 END
 

@@ -21,6 +21,7 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{4AF54D52-3794-4564-9C21-60CD712C633D}</ProjectGuid>
     <RootNamespace>MarkdownViewer</RootNamespace>
+    <TargetName>mdview</TargetName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">

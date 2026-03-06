@@ -13,15 +13,15 @@ REM 保存当前目录（脚本所在目录）
 set "SCRIPT_DIR=%~dp0"
 pushd "%SCRIPT_DIR%"
 
-REM 检查并终止正在运行的 MarkdownViewer.exe 进程
-echo Checking for running MarkdownViewer.exe processes...
-for /f "tokens=2" %%i in ('tasklist ^| findstr /i "MarkdownViewer.exe"') do (
+REM 检查并终止正在运行的 mdview.exe 进程
+echo Checking for running mdview.exe processes...
+for /f "tokens=2" %%i in ('tasklist ^| findstr /i "mdview.exe"') do (
     echo Terminating process ID: %%i
     taskkill /f /pid %%i
     if !ERRORLEVEL! EQU 0 (
-        echo Successfully terminated MarkdownViewer.exe process %%i
+        echo Successfully terminated mdview.exe process %%i
     ) else (
-        echo Failed to terminate MarkdownViewer.exe process %%i
+        echo Failed to terminate mdview.exe process %%i
     )
 )
 

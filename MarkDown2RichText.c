@@ -54,19 +54,51 @@ get_line(char** input)
 
 static char* rtf;
 static size_t buffer_size;
-static size_t buffer_left;
+static size_t buffer_used;
+
+static void
+ensure_capacity(size_t extra_len)
+{
+	size_t needed = buffer_used + extra_len + 1;
+	if (needed <= buffer_size)
+		return;
+
+	size_t new_size = buffer_size;
+	while (new_size < needed) {
+		new_size = new_size * 2;
+	}
+	char* new_rtf = realloc(rtf, new_size);
+	if (new_rtf == NULL)
+		return;
+	rtf = new_rtf;
+	buffer_size = new_size;
+}
 
 static void
 append_buffer(const char* str)
 {
 	size_t length = strlen(str);
-	if (buffer_left < length) {
-		buffer_left += buffer_size;
-		buffer_size = buffer_size * 2 + length;
-		rtf = realloc(rtf, buffer_size);
-	}
-	strcat(rtf, str);
-	buffer_left -= strlen(str);
+	if (length == 0)
+		return;
+	ensure_capacity(length);
+	if (buffer_used + length + 1 > buffer_size)
+		return;
+	memcpy(rtf + buffer_used, str, length);
+	buffer_used += length;
+	rtf[buffer_used] = '\0';
+}
+
+static void
+append_buffer_n(const char* str, size_t length)
+{
+	if (length == 0)
+		return;
+	ensure_capacity(length);
+	if (buffer_used + length + 1 > buffer_size)
+		return;
+	memcpy(rtf + buffer_used, str, length);
+	buffer_used += length;
+	rtf[buffer_used] = '\0';
 }
 
 static void
@@ -89,40 +121,254 @@ append_rtf_char(char c)
 		append_char(c);
 }
 
+static void
+append_literal_line(const char* line)
+{
+	for (const char* p = line; *p; ++p) {
+		append_rtf_char(*p);
+	}
+}
+
+static void
+append_code_block_row(const char* line)
+{
+	append_buffer("{\\trowd\\trgaph0\\trleft180\\clcbpat2\\cellx9600\\intbl\\f1\\fs20 ");
+	append_literal_line(line);
+	append_buffer("\\cell\\row}\n");
+}
+
+static void
+append_code_block_start(void)
+{
+	append_buffer("{\\trowd\\trgaph0\\trleft180\\trpaddt80\\trpaddb80\\trpaddl120\\trpaddr120\\trpaddft3\\trpaddfb3\\trpaddfl3\\trpaddfr3\\clcbpat2\\cellx9600\\intbl\\f1\\fs20 ");
+}
+
+static void
+append_code_block_line(const char* line, int has_previous_line)
+{
+	if (has_previous_line)
+		append_buffer("\\line ");
+	append_literal_line(line);
+}
+
+static void
+append_code_block_end(void)
+{
+	append_buffer("\\cell\\row}\\pard\\par\n");
+}
+
 #ifdef _WIN32
 LPWSTR toW(const char* strTextUTF8);
 #endif
 
-static char hex[] = "00";
 const static char* hex_digits = "0123456789ABCDEF";
+
+static int
+is_absolute_path(const char* file_name)
+{
+	if (file_name == NULL || *file_name == '\0')
+		return 0;
+#ifdef _WIN32
+	/* Drive letter path, UNC path, or rooted path. */
+	if (((file_name[0] >= 'A' && file_name[0] <= 'Z') || (file_name[0] >= 'a' && file_name[0] <= 'z')) &&
+		file_name[1] == ':')
+		return 1;
+	if ((file_name[0] == '\\' && file_name[1] == '\\') || file_name[0] == '/' || file_name[0] == '\\')
+		return 1;
+#else
+	if (file_name[0] == '/')
+		return 1;
+#endif
+	return 0;
+}
+
 static void
+normalize_image_target(const char* input, char* output, size_t out_size)
+{
+	size_t len = strlen(input);
+	size_t start = 0;
+	size_t end = len;
+
+	while (start < len && (input[start] == ' ' || input[start] == '\t'))
+		start++;
+	while (end > start && (input[end - 1] == ' ' || input[end - 1] == '\t'))
+		end--;
+
+	if (end > start + 1 && input[start] == '<' && input[end - 1] == '>') {
+		start++;
+		end--;
+	}
+
+	size_t out_len = end - start;
+	if (out_len >= out_size)
+		out_len = out_size - 1;
+	memcpy(output, input + start, out_len);
+	output[out_len] = '\0';
+}
+
+static const char*
+detect_rtf_blip_type(FILE* file)
+{
+	unsigned char sig[8] = { 0 };
+	size_t got = fread(sig, 1, sizeof(sig), file);
+	rewind(file);
+
+	if (got >= 8 &&
+		sig[0] == 0x89 && sig[1] == 0x50 && sig[2] == 0x4E && sig[3] == 0x47 &&
+		sig[4] == 0x0D && sig[5] == 0x0A && sig[6] == 0x1A && sig[7] == 0x0A)
+		return "\\pngblip";
+
+	if (got >= 3 && sig[0] == 0xFF && sig[1] == 0xD8 && sig[2] == 0xFF)
+		return "\\jpegblip";
+
+	return NULL;
+}
+
+static int
+read_png_dimensions(FILE* file, int* width, int* height)
+{
+	unsigned char hdr[24] = { 0 };
+	size_t got = fread(hdr, 1, sizeof(hdr), file);
+	rewind(file);
+	if (got < sizeof(hdr))
+		return 0;
+	if (!(hdr[0] == 0x89 && hdr[1] == 0x50 && hdr[2] == 0x4E && hdr[3] == 0x47))
+		return 0;
+
+	*width = (int)((hdr[16] << 24) | (hdr[17] << 16) | (hdr[18] << 8) | hdr[19]);
+	*height = (int)((hdr[20] << 24) | (hdr[21] << 16) | (hdr[22] << 8) | hdr[23]);
+	return (*width > 0 && *height > 0);
+}
+
+static int
+read_jpeg_dimensions(FILE* file, int* width, int* height)
+{
+	int c1 = fgetc(file);
+	int c2 = fgetc(file);
+	if (c1 != 0xFF || c2 != 0xD8) {
+		rewind(file);
+		return 0;
+	}
+
+	for (;;) {
+		int marker_prefix = fgetc(file);
+		if (marker_prefix == EOF)
+			break;
+		if (marker_prefix != 0xFF)
+			continue;
+
+		int marker = fgetc(file);
+		while (marker == 0xFF) {
+			marker = fgetc(file);
+		}
+		if (marker == EOF)
+			break;
+
+		if (marker == 0xD9 || marker == 0xDA)
+			break;
+
+		int len_hi = fgetc(file);
+		int len_lo = fgetc(file);
+		if (len_hi == EOF || len_lo == EOF)
+			break;
+		int seg_len = (len_hi << 8) | len_lo;
+		if (seg_len < 2)
+			break;
+
+		/* SOF markers containing size info */
+		if ((marker >= 0xC0 && marker <= 0xC3) ||
+			(marker >= 0xC5 && marker <= 0xC7) ||
+			(marker >= 0xC9 && marker <= 0xCB) ||
+			(marker >= 0xCD && marker <= 0xCF)) {
+			(void)fgetc(file); /* precision */
+			int h_hi = fgetc(file), h_lo = fgetc(file);
+			int w_hi = fgetc(file), w_lo = fgetc(file);
+			if (h_hi == EOF || h_lo == EOF || w_hi == EOF || w_lo == EOF)
+				break;
+			*height = (h_hi << 8) | h_lo;
+			*width = (w_hi << 8) | w_lo;
+			rewind(file);
+			return (*width > 0 && *height > 0);
+		}
+
+		if (fseek(file, seg_len - 2, SEEK_CUR) != 0)
+			break;
+	}
+
+	rewind(file);
+	return 0;
+}
+
+static int
 append_image(const char* file_name)
 {
 	FILE* file;
 	char full_path[1024];
+	char normalized[1024];
+	normalize_image_target(file_name, normalized, sizeof(normalized));
+	if (normalized[0] == '\0')
+		return 0;
+	if (strncmp(normalized, "http://", 7) == 0 || strncmp(normalized, "https://", 8) == 0)
+		return 0;
 #ifdef _WIN32
-	sprintf(full_path, "%s\\%s", path, file_name);
+	if (is_absolute_path(normalized))
+		sprintf(full_path, "%s", normalized);
+	else
+		sprintf(full_path, "%s\\%s", path, normalized);
 	LPWSTR path_w = toW(full_path);
 	file = _wfopen(path_w, L"rb");
 	free(path_w);
+	if (file == NULL) {
+		file = fopen(full_path, "rb");
+	}
 #else
-	sprintf(full_path, "%s/%s", path, file_name);
+	if (is_absolute_path(normalized))
+		sprintf(full_path, "%s", normalized);
+	else
+		sprintf(full_path, "%s/%s", path, normalized);
 	file = fopen(full_path, "rb");
 #endif
 
 	if (file == NULL)
-		return;
-	int c;
-	append_buffer("\\par\\qc{\\pict\\pngblip\\picscalex100\\picscaley100\\picscaled1 ");
+		return 0;
+	const char* blip_type = detect_rtf_blip_type(file);
+	if (blip_type == NULL) {
+		fclose(file);
+		return 0;
+	}
+	int width_px = 0;
+	int height_px = 0;
+	if (strcmp(blip_type, "\\pngblip") == 0) {
+		(void)read_png_dimensions(file, &width_px, &height_px);
+	}
+	else if (strcmp(blip_type, "\\jpegblip") == 0) {
+		(void)read_jpeg_dimensions(file, &width_px, &height_px);
+	}
+	unsigned char raw_buf[4096];
+	char hex_buf[4096 * 2];
+	append_buffer("\\par\\qc{\\pict");
+	append_buffer(blip_type);
+	if (width_px > 0 && height_px > 0) {
+		char dim[128];
+		/* 1 px ~= 15 twips at 96 DPI */
+		sprintf(dim, "\\picw%d\\pich%d\\picwgoal%d\\pichgoal%d ",
+			width_px, height_px, width_px * 15, height_px * 15);
+		append_buffer(dim);
+	}
+	append_buffer("\\picscalex100\\picscaley100\\picscaled1 ");
 
-	while ((c = getc(file)) != EOF) {
-		*hex = hex_digits[c >> 4 & 0xF];
-		*(hex + 1) = hex_digits[c & 0xF];
-		append_buffer(hex);
+	size_t nread = 0;
+	while ((nread = fread(raw_buf, 1, sizeof(raw_buf), file)) > 0) {
+		for (size_t i = 0; i < nread; i++) {
+			hex_buf[i * 2] = hex_digits[(raw_buf[i] >> 4) & 0x0F];
+			hex_buf[i * 2 + 1] = hex_digits[raw_buf[i] & 0x0F];
+		}
+		append_buffer_n(hex_buf, nread * 2);
 	}
 	append_buffer("\n}\\par\\ql\n");
 
 	fclose(file);
+	return 1;
 }
 
 static int
@@ -880,14 +1126,18 @@ append_buffer_line(char* line)
 		}
 
 		if (strncmp(pos, "![", 2) == 0) {
-			char* middle = strstr(pos + 2, "](");
-			if (middle) {
-				middle += 2;
-				char* end = strstr(middle, ")");
-				if (end) {
-					*end = 0;
-					append_image(middle);
-					pos = end + 1;
+			char* image_start = pos;
+			char* label_end = strstr(pos + 2, "](");
+			if (label_end) {
+				char* url_start = label_end + 2;
+				char* url_end = strstr(url_start, ")");
+				if (url_end) {
+					/* Keep original markdown image marker; image insertion is handled in RichEdit layer. */
+					while (image_start <= url_end) {
+						append_rtf_char(*image_start);
+						image_start++;
+					}
+					pos = url_end + 1;
 					continue;
 				}
 			}
@@ -1000,11 +1250,13 @@ char*
 markdown2rtf(const char* md, const char* img_path)
 {
 	buffer_size = strlen(md) * 6;
-	buffer_left = buffer_size - 1;
+	if (buffer_size < 1024)
+		buffer_size = 1024;
 	rtf = malloc(buffer_size);
 	if (rtf == NULL)
 		return "";
 	rtf[0] = 0;
+	buffer_used = 0;
 	char* pos = (char*)md;
 	char* line;
 	path = (char*)img_path;
@@ -1017,7 +1269,7 @@ markdown2rtf(const char* md, const char* img_path)
 	code_state = 0;
 
 	append_buffer("{\\rtf\\ansi\\f0\\fnil \\sl300 {\\fonttbl {\\f0 Arial;}{\\f1 Courier New;}{\\f2 Symbol;}}");
-	append_buffer("{\\colortbl;\\red5\\green10\\blue221;\\red235\\green235\\blue235;\\red102\\green102\\blue102;}");
+	append_buffer("{\\colortbl;\\red5\\green10\\blue221;\\red228\\green228\\blue228;\\red102\\green102\\blue102;}");
 	append_buffer("\\fs22\n");
 
 	// Skip YAML front matter if present
@@ -1044,6 +1296,7 @@ markdown2rtf(const char* md, const char* img_path)
 	int prev_list_depth = 0;
 	int in_blockquote = 0;
 	int prev_was_indented_code = 0;
+	int code_block_has_lines = 0;
 
 	while ((line = get_line(&pos)) != NULL)
 	{
@@ -1051,14 +1304,13 @@ markdown2rtf(const char* md, const char* img_path)
 
 		if (in_fenced_code) {
 			if (is_fenced_code_end(line, fence_char, fence_len)) {
-				append_buffer("}\\par\\pard\n");
+				append_code_block_end();
 				in_fenced_code = 0;
+				code_block_has_lines = 0;
 			}
 			else {
-				for (int i = 0; i < line_len; i++) {
-					append_rtf_char(line[i]);
-				}
-				append_buffer("\\line\n");
+				append_code_block_line(line, code_block_has_lines);
+				code_block_has_lines = 1;
 			}
 			free(line);
 			continue;
@@ -1070,7 +1322,8 @@ markdown2rtf(const char* md, const char* img_path)
 			in_fenced_code = 1;
 			fence_char = fc;
 			fence_len = fl;
-			append_buffer("{\\f1\\fs20\\highlight2\\par ");
+			append_code_block_start();
+			code_block_has_lines = 0;
 			free(line);
 			continue;
 		}
@@ -1135,7 +1388,8 @@ markdown2rtf(const char* md, const char* img_path)
 
 		if (is_indented_code(line) && prev_list_depth == 0) {
 			if (!prev_was_indented_code) {
-				append_buffer("{\\f1\\fs20\\highlight2 ");
+				append_code_block_start();
+				code_block_has_lines = 0;
 			}
 			const char* code_start = line;
 			if (line[0] == '\t')
@@ -1143,15 +1397,16 @@ markdown2rtf(const char* md, const char* img_path)
 			else
 				code_start = line + 4;
 
-			append_buffer_line((char*)code_start);
-			append_buffer("\\line\n");
+			append_code_block_line(code_start, code_block_has_lines);
+			code_block_has_lines = 1;
 			prev_was_indented_code = 1;
 			free(line);
 			continue;
 		}
 		else if (prev_was_indented_code) {
-			append_buffer("}\\par\\pard\n");
+			append_code_block_end();
 			prev_was_indented_code = 0;
+			code_block_has_lines = 0;
 		}
 
 		int ul_pos = is_unordered_list(line);
@@ -1327,10 +1582,10 @@ markdown2rtf(const char* md, const char* img_path)
 		append_buffer("}\\pard\n");
 	}
 	if (prev_was_indented_code) {
-		append_buffer("}\\par\\pard\n");
+		append_code_block_end();
 	}
 	if (in_fenced_code) {
-		append_buffer("}\\par\\pard\n");
+		append_code_block_end();
 	}
 	if (in_table) {
 		append_buffer("\\pard\\par\n");
