@@ -6,6 +6,8 @@
 #include <ctype.h>
 #ifdef _WIN32
 #include <windows.h>
+#include <shlwapi.h>
+#pragma comment(lib, "shlwapi.lib")
 #endif
 
 static char* path;
@@ -94,25 +96,85 @@ LPWSTR toW(const char* strTextUTF8);
 
 static char hex[] = "00";
 const static char* hex_digits = "0123456789ABCDEF";
+
+// Get image format from file extension
+// Returns: 1 for PNG, 2 for JPEG, 0 for unknown
+static int
+get_image_format(const char* file_name)
+{
+	const char* ext = strrchr(file_name, '.');
+	if (ext == NULL)
+		return 0;
+	
+	// Convert to lowercase for comparison
+	char lower_ext[8] = {0};
+	int i = 0;
+	while (ext[i] && i < 7) {
+		lower_ext[i] = (char)tolower((unsigned char)ext[i]);
+		i++;
+	}
+	
+	if (strcmp(lower_ext, ".png") == 0)
+		return 1;  // PNG
+	else if (strcmp(lower_ext, ".jpg") == 0 || strcmp(lower_ext, ".jpeg") == 0)
+		return 2;  // JPEG
+	
+	return 0;  // Unknown
+}
+
 static void
 append_image(const char* file_name)
 {
+	int img_format = get_image_format(file_name);
+	if (img_format == 0)
+		return;  // Unsupported format
+	
 	FILE* file;
-	char full_path[1024];
 #ifdef _WIN32
-	sprintf_s(full_path, sizeof(full_path), "%s\\%s", path, file_name);
-	LPWSTR path_w = toW(full_path);
-	if (_wfopen_s(&file, path_w, L"rb") != 0) file = NULL;
-	free(path_w);
+	// Build absolute path
+	WCHAR base_path_w[MAX_PATH];
+	WCHAR file_name_w[MAX_PATH];
+	WCHAR full_path_w[MAX_PATH * 2];
+	
+	MultiByteToWideChar(CP_UTF8, 0, path, -1, base_path_w, MAX_PATH);
+	MultiByteToWideChar(CP_UTF8, 0, file_name, -1, file_name_w, MAX_PATH);
+	
+	// Build full path: base_path + "\" + file_name
+	wcscpy_s(full_path_w, MAX_PATH * 2, base_path_w);
+	wcscat_s(full_path_w, MAX_PATH * 2, L"\\");
+	wcscat_s(full_path_w, MAX_PATH * 2, file_name_w);
+	
+	// Canonicalize to resolve .. and .
+	WCHAR canonical_path[MAX_PATH * 2];
+	if (!PathCanonicalizeW(canonical_path, full_path_w))
+	{
+		MessageBoxW(NULL, full_path_w, L"PathCanonicalize failed", MB_OK);
+		return;
+	}
+	
+	if (_wfopen_s(&file, canonical_path, L"rb") != 0)
+	{
+		MessageBoxW(NULL, canonical_path, L"Failed to open image", MB_OK);
+		file = NULL;
+	}
 #else
+	char full_path[1024];
 	sprintf_s(full_path, sizeof(full_path), "%s/%s", path, file_name);
 	file = fopen(full_path, "rb");
 #endif
 
 	if (file == NULL)
 		return;
+	
 	int c;
-	append_buffer("\\par\\qc{\\pict\\pngblip\\picscalex100\\picscaley100\\picscaled1 ");
+	append_buffer("\\par\\qc{\\pict\\");
+	
+	if (img_format == 1)
+		append_buffer("pngblip");
+	else
+		append_buffer("jpegblip");
+	
+	append_buffer("\\picscalex100\\picscaley100\\picscaled1 ");
 
 	while ((c = getc(file)) != EOF) {
 		*hex = hex_digits[c >> 4 & 0xF];
@@ -459,6 +521,36 @@ static int sup_state = 0;
 static int sub_state = 0;
 static int html_u_state = 0;
 
+// Only treat a single '~' as subscript delimiter if it can be closed later in the same line.
+// This prevents common range expressions like "50°~115°" from enabling subscript until EOF.
+static int
+has_closing_single_tilde(const char* p)
+{
+	if (!p || *p != '~')
+		return 0;
+	
+	const char* q = p + 1;
+	while (*q) {
+		// Skip escaped characters (e.g., \~)
+		if (*q == '\\' && *(q + 1) != 0) {
+			q += 2;
+			continue;
+		}
+		
+		// Skip strikethrough marker '~~'
+		if (*q == '~' && *(q + 1) == '~') {
+			q += 2;
+			continue;
+		}
+		
+		if (*q == '~')
+			return 1;
+		
+		q++;
+	}
+	return 0;
+}
+
 static int
 append_html_entity(const char* entity)
 {
@@ -793,18 +885,28 @@ append_buffer_line(char* line)
 			continue;
 		}
 
-		if (strncmp(pos, "~", 1) == 0) {
-			*pos = 0;
+		// Subscript using single tildes: ~text~
+		// Important: do not toggle on a lone '~' (e.g., numeric ranges "50°~115°").
+		if (*pos == '~' && *(pos + 1) != '~') {
 			if (sub_state) {
+				*pos = 0;
 				append_buffer("\\nosupersub ");
 				sub_state = 0;
+				pos += 1;
+				continue;
 			}
 			else {
+				if (!has_closing_single_tilde(pos)) {
+					append_rtf_char('~');
+					pos += 1;
+					continue;
+				}
+				*pos = 0;
 				append_buffer("\\sub ");
 				sub_state = 1;
+				pos += 1;
+				continue;
 			}
-			pos += 1;
-			continue;
 		}
 
 		if (strncmp(pos, "^", 1) == 0) {
@@ -914,6 +1016,16 @@ append_buffer_line(char* line)
 		append_rtf_char(*pos);
 		pos++;
 	}
+	
+	// Safety: prevent unmatched ~ / ^ from leaking formatting into following lines.
+	if (sub_state) {
+		append_buffer("\\nosupersub ");
+		sub_state = 0;
+	}
+	if (sup_state) {
+		append_buffer("\\nosupersub ");
+		sup_state = 0;
+	}
 }
 
 static void
@@ -1014,6 +1126,8 @@ markdown2rtf(const char* md, const char* img_path)
 	italic_state = 0;
 	strike_state = 0;
 	code_state = 0;
+	sup_state = 0;
+	sub_state = 0;
 
 	append_buffer("{\\rtf\\ansi\\f0\\fnil \\sl300 {\\fonttbl {\\f0 Arial;}{\\f1 Courier New;}{\\f2 Symbol;}}");
 	append_buffer("{\\colortbl;\\red5\\green10\\blue221;\\red235\\green235\\blue235;\\red102\\green102\\blue102;}");
