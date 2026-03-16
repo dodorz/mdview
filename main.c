@@ -16,6 +16,8 @@
 #define MAX_LOADSTRING  100
 #define PATH_BUFFER_SIZE 4096
 #define MARGIN  20
+#define PREVIEW_BYTES (96 * 1024)
+#define WM_APP_RENDER_COMPLETE (WM_APP + 1)
 
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
@@ -38,6 +40,14 @@ WCHAR szCurrentFile[MAX_PATH] = L"";
 
 DWORD dwFilesize;
 char* pFileView;
+HANDLE hLoadThread = NULL;
+volatile LONG g_loadGeneration = 0;
+
+typedef struct {
+	char* mdFull;
+	char* imgPath;
+	DWORD generation;
+} RenderTask;
 
 static const DWORD ESC_DOUBLE_PRESS_INTERVAL_MS = 600;
 static ULONGLONG g_lastEscPressTimestamp = 0;
@@ -55,6 +65,7 @@ BOOL CreateStatusBar();
 void ShowLastError(LPCTSTR lpszContext);
 BOOL App_SaveState();
 BOOL App_RestoreState();
+DWORD WINAPI BackgroundRenderThread(LPVOID lpParam);
 
 int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nCmdShow)
 {
@@ -308,6 +319,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		}
 		break; }
 
+	case WM_APP_RENDER_COMPLETE: {
+		DWORD generation = (DWORD)lParam;
+		char* rtfResult = (char*)wParam;
+		if (rtfResult != NULL) {
+			if (generation == (DWORD)g_loadGeneration) {
+				SETTEXTEX se;
+				se.codepage = 65001;
+				se.flags = ST_DEFAULT;
+				SendMessageA(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)rtfResult);
+				SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Full document loaded.");
+			}
+			free(rtfResult);
+		}
+		if (hLoadThread != NULL) {
+			CloseHandle(hLoadThread);
+			hLoadThread = NULL;
+		}
+		return 0;
+	}
+
 	case WM_QUERYENDSESSION:
 	case WM_CLOSE:
 		App_SaveState();
@@ -349,9 +380,20 @@ FileOpen(WCHAR* lpszTextFileName)
 	se.codepage = 65001;// CP_ACP;
 	se.flags = ST_DEFAULT;
 
+	DWORD currentGeneration = (DWORD)InterlockedIncrement(&g_loadGeneration);
+	if (hLoadThread != NULL) {
+		// We no longer need to wait; close our handle so we don't leak.
+		CloseHandle(hLoadThread);
+		hLoadThread = NULL;
+	}
+
 	WCHAR  lpBufferPathWithFile[PATH_BUFFER_SIZE] = L"";
 	WCHAR  lpBufferPathWithoutFile[PATH_BUFFER_SIZE] = L"";
 	WCHAR* lpFilePart = NULL;
+	char* mdFull = NULL;
+	char* path = NULL;
+	char* previewRtf = NULL;
+	BOOL result = FALSE;
 
 	if (lpszTextFileName == NULL)
 	{
@@ -371,6 +413,7 @@ FileOpen(WCHAR* lpszTextFileName)
 	dwFilesize = GetFileSize(hFile, NULL);
 	if (dwFilesize == 0) {
 		ShowLastError(L"Invalid file.");
+		CloseHandle(hFile);
 		return 0;
 	}
 
@@ -379,34 +422,49 @@ FileOpen(WCHAR* lpszTextFileName)
 
 	if (pFileView == NULL) {
 		ShowLastError(L"Cannot open file.");
+		CloseHandle(hMap);
+		CloseHandle(hFile);
 		return 0;
 	}
 
 	if (GetFullPathNameW(lpszTextFileName, PATH_BUFFER_SIZE, lpBufferPathWithFile, &lpFilePart) == 0) {
 		ShowLastError(L"Invalid file.");
+		UnmapViewOfFile(pFileView);
+		CloseHandle(hMap);
+		CloseHandle(hFile);
 		return 0;
 	}
 	memcpy(lpBufferPathWithoutFile, lpBufferPathWithFile, PATH_BUFFER_SIZE);
 	if (PathCchRemoveFileSpec(lpBufferPathWithoutFile, PATH_BUFFER_SIZE) != S_OK) {
 		ShowLastError(L"Invalid file.");
+		UnmapViewOfFile(pFileView);
+		CloseHandle(hMap);
+		CloseHandle(hFile);
 		return 0;
 	}
 	lstrcpyW(szCurrentFile, lpszTextFileName);
 
-	char* md = malloc(dwFilesize + 2);
-	//memset(md,0, dwFilesize + 1);
-	memcpy(md, pFileView, dwFilesize);
-	*(md + dwFilesize) = '\0';
-	*(md + dwFilesize + 1) = '\0';
+	mdFull = malloc(dwFilesize + 2);
+	if (mdFull == NULL) {
+		ShowLastError(L"Out of memory.");
+		UnmapViewOfFile(pFileView);
+		CloseHandle(hMap);
+		CloseHandle(hFile);
+		return 0;
+	}
+	memcpy(mdFull, pFileView, dwFilesize);
+	*(mdFull + dwFilesize) = '\0';
+	*(mdFull + dwFilesize + 1) = '\0';
 
 	UnmapViewOfFile(pFileView);
 	CloseHandle(hMap);
 	CloseHandle(hFile);
 
-	char* path = toU8(lpBufferPathWithoutFile);
-	char* pRTF = markdown2rtf(md, path);
-	if (pRTF == NULL) {
-		SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Could not convert Markdown.");
+	path = toU8(lpBufferPathWithoutFile);
+	if (path == NULL) {
+		ShowLastError(L"String conversion failed.");
+		free(mdFull);
+		return 0;
 	}
 
 	TCHAR szTitle[MAX_PATH + 20];
@@ -414,12 +472,115 @@ FileOpen(WCHAR* lpszTextFileName)
 	StrCatW(szTitle, lpFilePart);
 	StrCatW(szTitle, L" - ");
 	StrCatW(szTitle, szAppName);
-	SendMessageW(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)pRTF);
 	SendMessageW(hMainWindow, WM_SETTEXT, (WPARAM)0, (LPARAM)szTitle);
-	free(md);
-	free(pRTF);
-	free(path);
-	return TRUE;
+
+	// Build a quick preview so the UI becomes responsive immediately.
+	size_t previewLen = (dwFilesize < PREVIEW_BYTES) ? (size_t)dwFilesize : (size_t)PREVIEW_BYTES;
+	if (previewLen == 0) {
+		previewLen = dwFilesize;
+	}
+	size_t safeLen = previewLen;
+	if (safeLen < (size_t)dwFilesize) {
+		// Avoid splitting UTF-8 multibyte characters.
+		while (safeLen > 0 && (mdFull[safeLen] & 0xC0) == 0x80) {
+			safeLen--;
+		}
+		// Try to end preview on a newline to keep paragraphs intact.
+		size_t backtrackLimit = (safeLen > 2048) ? safeLen - 2048 : 0;
+		size_t nl = safeLen;
+		while (nl > backtrackLimit && nl > 0 && mdFull[nl - 1] != '\n') {
+			nl--;
+		}
+		if (nl > 0 && nl > backtrackLimit) {
+			safeLen = nl;
+		}
+	}
+	else {
+		safeLen = (size_t)dwFilesize;
+	}
+
+	char savedChar = mdFull[safeLen];
+	mdFull[safeLen] = '\0';
+	previewRtf = markdown2rtf(mdFull, path);
+	mdFull[safeLen] = savedChar;
+
+	if (previewRtf != NULL) {
+		SendMessageA(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)previewRtf);
+	}
+	else {
+		SendMessageA(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)"");
+		SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Could not convert Markdown.");
+	}
+
+	if (dwFilesize > safeLen) {
+		RenderTask* task = (RenderTask*)malloc(sizeof(RenderTask));
+		if (task != NULL) {
+			task->mdFull = mdFull;
+			task->imgPath = path;
+			task->generation = currentGeneration;
+			hLoadThread = CreateThread(NULL, 0, BackgroundRenderThread, task, 0, NULL);
+			if (hLoadThread == NULL) {
+				// Fall back to synchronous full render if thread creation failed.
+				char* fullRtf = markdown2rtf(mdFull, path);
+				if (fullRtf != NULL) {
+					SendMessageA(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)fullRtf);
+					SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Document loaded.");
+					free(fullRtf);
+				}
+				free(mdFull);
+				free(path);
+			}
+			else {
+				SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Preview loaded, rendering full document...");
+				// Ownership moves to background thread.
+				mdFull = NULL;
+				path = NULL;
+			}
+		}
+		else {
+			char* fullRtf = markdown2rtf(mdFull, path);
+			if (fullRtf != NULL) {
+				SendMessageA(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)fullRtf);
+				SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Document loaded.");
+				free(fullRtf);
+			}
+			free(mdFull);
+			free(path);
+		}
+	}
+	else {
+		SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Document loaded.");
+		free(mdFull);
+		free(path);
+	}
+
+	if (previewRtf != NULL)
+		free(previewRtf);
+
+	result = TRUE;
+	return result;
+}
+
+DWORD WINAPI
+BackgroundRenderThread(LPVOID lpParam)
+{
+	RenderTask* task = (RenderTask*)lpParam;
+	if (task == NULL)
+		return 0;
+
+	char* fullRtf = markdown2rtf(task->mdFull, task->imgPath);
+
+	free(task->mdFull);
+	free(task->imgPath);
+
+	DWORD generation = task->generation;
+	free(task);
+
+	if (fullRtf != NULL) {
+		PostMessage(hMainWindow, WM_APP_RENDER_COMPLETE, (WPARAM)fullRtf, (LPARAM)generation);
+	}
+
+	return 0;
 }
 
 void

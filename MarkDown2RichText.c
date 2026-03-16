@@ -10,15 +10,15 @@
 #pragma comment(lib, "shlwapi.lib")
 #endif
 
-static char* path;
-static int top_of_page = 1;
+static __declspec(thread) char* path;
+static __declspec(thread) int top_of_page = 1;
 
 // State variables for multi-line constructs
-static int in_fenced_code = 0;
-static char fence_char = 0;
-static int fence_len = 0;
-static int in_table = 0;
-static int table_col_count = 0;
+static __declspec(thread) int in_fenced_code = 0;
+static __declspec(thread) char fence_char = 0;
+static __declspec(thread) int fence_len = 0;
+static __declspec(thread) int in_table = 0;
+static __declspec(thread) int table_col_count = 0;
 
 static char*
 get_line(char** input)
@@ -53,21 +53,29 @@ get_line(char** input)
 	return line;
 }
 
-static char* rtf;
-static size_t buffer_size;
-static size_t buffer_left;
+static __declspec(thread) char* rtf;
+static __declspec(thread) size_t buffer_size;
+static __declspec(thread) size_t buffer_len;
 
 static void
 append_buffer(const char* str)
 {
 	size_t length = strlen(str);
-	if (buffer_left < length) {
-		buffer_left += buffer_size;
-		buffer_size = buffer_size * 2 + length;
-		rtf = realloc(rtf, buffer_size);
+	size_t required = buffer_len + length + 1; // +1 for terminator
+	if (required > buffer_size) {
+		size_t new_size = buffer_size ? buffer_size : 1024;
+		while (new_size < required) {
+			new_size = new_size * 2 + length;
+		}
+		char* new_rtf = realloc(rtf, new_size);
+		if (new_rtf == NULL)
+			return;
+		rtf = new_rtf;
+		buffer_size = new_size;
 	}
-	strcat_s(rtf, buffer_size, str);
-	buffer_left -= strlen(str);
+	memcpy(rtf + buffer_len, str, length);
+	buffer_len += length;
+	rtf[buffer_len] = '\0';
 }
 
 static void
@@ -94,7 +102,6 @@ append_rtf_char(char c)
 LPWSTR toW(const char* strTextUTF8);
 #endif
 
-static char hex[] = "00";
 const static char* hex_digits = "0123456789ABCDEF";
 
 // Get image format from file extension
@@ -125,6 +132,7 @@ get_image_format(const char* file_name)
 static void
 append_image(const char* file_name)
 {
+	char hex[3] = "00";
 	int img_format = get_image_format(file_name);
 	if (img_format == 0)
 		return;  // Unsupported format
@@ -513,13 +521,13 @@ get_setext_underline(const char* p, int* type)
 	return (int)(p - start);
 }
 
-static int bold_state = 0;
-static int italic_state = 0;
-static int strike_state = 0;
-static int code_state = 0;
-static int sup_state = 0;
-static int sub_state = 0;
-static int html_u_state = 0;
+static __declspec(thread) int bold_state = 0;
+static __declspec(thread) int italic_state = 0;
+static __declspec(thread) int strike_state = 0;
+static __declspec(thread) int code_state = 0;
+static __declspec(thread) int sup_state = 0;
+static __declspec(thread) int sub_state = 0;
+static __declspec(thread) int html_u_state = 0;
 
 // Only treat a single '~' as subscript delimiter if it can be closed later in the same line.
 // This prevents common range expressions like "50°~115°" from enabling subscript until EOF.
@@ -1110,11 +1118,12 @@ process_table_row(const char* line, int is_header, int col_count)
 char*
 markdown2rtf(const char* md, const char* img_path)
 {
-	buffer_size = strlen(md) * 6;
-	buffer_left = buffer_size - 1;
+	size_t md_len = strlen(md);
+	buffer_size = (md_len * 4) + 4096; // heuristic
+	buffer_len = 0;
 	rtf = malloc(buffer_size);
 	if (rtf == NULL)
-		return "";
+		return NULL;
 	rtf[0] = 0;
 	char* pos = (char*)md;
 	char* line;
@@ -1453,4 +1462,3 @@ markdown2rtf(const char* md, const char* img_path)
 	top_of_page = 1;
 	return rtf;
 }
-
