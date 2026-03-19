@@ -1,5 +1,5 @@
 @echo off
-REM MarkdownViewer 构建脚本
+REM mdview 构建脚本
 REM 用法: build.bat [Configuration] [Platform] [MSBuild参数]
 REM 示例: build.bat Release x64
 REM        build.bat Debug Win32 /t:Rebuild
@@ -47,8 +47,8 @@ goto collect_extra_args
 :args_done
 
 REM 检查解决方案文件是否存在
-if not exist "MarkdownViewer.sln" (
-    echo Error: MarkdownViewer.sln not found
+if not exist "mdview.sln" (
+    echo Error: mdview.sln not found
     echo Current directory: %CD%
     echo Please run this script from the project root directory
     popd
@@ -88,14 +88,14 @@ echo Build Configuration
 echo ========================================
 echo Configuration: %CONFIG%
 echo Platform: %PLATFORM%
-echo Solution: MarkdownViewer.sln
+echo Solution: mdview.sln
 echo Toolchain: %VS_PATH%
 echo ========================================
 echo.
 
 REM 构建项目
 echo Starting build...
-msbuild "MarkdownViewer.sln" /p:Configuration="%CONFIG%" /p:Platform="%PLATFORM%"%MSBUILD_ARGS%
+msbuild "mdview.sln" /p:Configuration="%CONFIG%" /p:Platform="%PLATFORM%" %*
 
 if %ERRORLEVEL% EQU 0 (
     echo.

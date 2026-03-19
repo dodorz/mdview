@@ -20,8 +20,12 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{4AF54D52-3794-4564-9C21-60CD712C633D}</ProjectGuid>
+<<<<<<< HEAD:MarkdownViewer.vcxproj
     <RootNamespace>MarkdownViewer</RootNamespace>
     <TargetName>mdview</TargetName>
+=======
+    <RootNamespace>mdview</RootNamespace>
+>>>>>>> 26ed583 (Rename project from MarkdownViewer to mdview):mdview.vcxproj
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
