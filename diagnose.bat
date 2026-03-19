@@ -16,19 +16,19 @@ echo.
 
 REM 检查项目文件
 echo [2] 检查项目文件
-if exist "MarkdownViewer.sln" (
-    echo [OK] MarkdownViewer.sln 存在
+if exist "mdview.sln" (
+    echo [OK] mdview.sln 存在
 ) else (
-    echo [错误] MarkdownViewer.sln 不存在
+    echo [错误] mdview.sln 不存在
     echo 请确保在项目根目录下运行此脚本
     pause
     exit /b 1
 )
 
-if exist "MarkdownViewer.vcxproj" (
-    echo [OK] MarkdownViewer.vcxproj 存在
+if exist "mdview.vcxproj" (
+    echo [OK] mdview.vcxproj 存在
 ) else (
-    echo [错误] MarkdownViewer.vcxproj 不存在
+    echo [错误] mdview.vcxproj 不存在
 )
 
 echo.
@@ -97,8 +97,8 @@ REM 检查解决方案文件路径
 echo [6] 检查解决方案文件路径
 set SCRIPT_DIR=%~dp0
 echo 脚本目录: %SCRIPT_DIR%
-echo 解决方案文件: %SCRIPT_DIR%MarkdownViewer.sln
-if exist "%SCRIPT_DIR%MarkdownViewer.sln" (
+echo 解决方案文件: %SCRIPT_DIR%mdview.sln
+if exist "%SCRIPT_DIR%mdview.sln" (
     echo [OK] 解决方案文件路径正确
 ) else (
     echo [警告] 使用相对路径可能有问题

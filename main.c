@@ -1,4 +1,4 @@
-// Markdown Viewer - 2022 by Thomas Fuhringer
+// mdview - 2022 by Thomas Fuhringer
 // 2026 by dodo
 
 #pragma once
