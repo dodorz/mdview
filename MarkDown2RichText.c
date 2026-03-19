@@ -1139,7 +1139,7 @@ markdown2rtf(const char* md, const char* img_path)
 	sub_state = 0;
 
 	append_buffer("{\\rtf\\ansi\\f0\\fnil \\sl300 {\\fonttbl {\\f0 Arial;}{\\f1 Courier New;}{\\f2 Symbol;}}");
-	append_buffer("{\\colortbl;\\red5\\green10\\blue221;\\red235\\green235\\blue235;\\red102\\green102\\blue102;}");
+	append_buffer("{\\colortbl;\\red5\\green10\\blue221;\\red235\\green235\\blue235;\\red102\\green102\\blue102;\\red200\\green200\\blue200;}");
 	append_buffer("\\fs22\n");
 
 	// Skip YAML front matter if present
@@ -1165,6 +1165,7 @@ markdown2rtf(const char* md, const char* img_path)
 
 	int prev_list_depth = 0;
 	int in_blockquote = 0;
+	int blockquote_first_line = 0;
 	int prev_was_indented_code = 0;
 
 	while ((line = get_line(&pos)) != NULL)
@@ -1234,25 +1235,48 @@ markdown2rtf(const char* md, const char* img_path)
 
 			if (depth != in_blockquote) {
 				if (in_blockquote > 0) {
-					append_buffer("}\\pard\n");
+					append_buffer("\\cell\\row\\pard\\par}\n");
 				}
-				char fmt[64];
-				int indent = depth * 360;
-				// Increase indent for nested levels
-				sprintf_s(fmt, sizeof(fmt), "{\\pard\\li%d\\ri%d\\cf3\\highlight2 ", indent, indent);
-				append_buffer(fmt);
 				in_blockquote = depth;
-			}
+				blockquote_first_line = 1;
 
+				{
+					char rowfmt[512];
+					int bar_width = 80 * (depth > 0 ? depth : 1);
+					int content_width = 10800;
+					int cell1 = bar_width;
+					int cell2 = cell1 + content_width;
+					sprintf_s(
+						rowfmt,
+						sizeof(rowfmt),
+						"{\\trowd\\trgaph0\\trleft0\\trwWidth0\\trftsWidth3"
+						"\\trbrdrt\\brdrnil\\trbrdrl\\brdrnil\\trbrdrb\\brdrnil\\trbrdrr\\brdrnil"
+						"\\trbrdrh\\brdrnil\\trbrdrv\\brdrnil"
+						"\\clbrdrt\\brdrnil\\clbrdrl\\brdrnil\\clbrdrb\\brdrnil\\clbrdrr\\brdrnil"
+						"\\clcbpat4\\cellx%d"
+						"\\clbrdrt\\brdrnil\\clbrdrl\\brdrnil\\clbrdrb\\brdrnil\\clbrdrr\\brdrnil"
+						"\\clcbpat2\\cellx%d\n",
+						cell1,
+						cell2
+					);
+					append_buffer(rowfmt);
+					append_buffer("\\pard\\intbl\\cell\n");
+					append_buffer("\\pard\\intbl\\cf3 ");
+				}
+			}
+			if (!blockquote_first_line) {
+				append_buffer("\\line ");
+			}
 			append_buffer_line(line + content_start);
-			append_buffer("\\par\n");
+			blockquote_first_line = 0;
 
 			free(line);
 			continue;
 		}
 		else if (in_blockquote > 0) {
-			append_buffer("}\\pard\n");
+			append_buffer("\\cell\\row\\pard\\par}\n");
 			in_blockquote = 0;
+			blockquote_first_line = 0;
 		}
 
 		if (is_indented_code(line) && prev_list_depth == 0) {
@@ -1446,7 +1470,7 @@ markdown2rtf(const char* md, const char* img_path)
 	}
 
 	if (in_blockquote) {
-		append_buffer("}\\pard\n");
+		append_buffer("\\cell\\row\\pard\\par}\n");
 	}
 	if (prev_was_indented_code) {
 		append_buffer("}\\par\\pard\n");

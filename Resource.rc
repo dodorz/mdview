@@ -106,12 +106,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "dodo"
             VALUE "FileDescription", "Markdown viewer fork (mdview)"
-            VALUE "FileVersion", "1,0,3,11"
+            VALUE "FileVersion", "1,0,3,12"
             VALUE "InternalName", "mdview.exe"
             VALUE "LegalCopyright", "Copyright (C) 2026 dodo"
             VALUE "OriginalFilename", "mdview.exe"
             VALUE "ProductName", "Markdown Viewer"
-            VALUE "ProductVersion", "1,0,3,11"
+            VALUE "ProductVersion", "1,0,3,12"
         END
     END
     BLOCK "VarFileInfo"
@@ -133,8 +133,8 @@ FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
     DEFPUSHBUTTON   "OK",IDOK,210,120,50,14
     LTEXT           "By dodo, 2026 (forked from Thomas Fuhringer's original project)",IDC_STATIC,50,16,188,16
-    LTEXT           "Version 1.0.3.11",IDC_STATIC,50,38,188,16
-    LTEXT           "https://github.com/thomasfuhringer/markdownviewer",IDC_STATIC,50,60,220,16
+    LTEXT           "Version 1.0.3.12",IDC_STATIC,50,38,188,16
+    LTEXT           "https://github.com/dodorz/markdownviewer",IDC_STATIC,50,60,220,16
     ICON            IDI_APP,IDC_STATIC,16,16,49,49
 END
 
