@@ -1,4 +1,4 @@
-# Markdown Viewer
+# mdview
 A simple Markdown file renderer for Windows.  
 Nothing to install, just run `mdview.exe`  
 Work in progress, not all Markdown tags implemented yet.  

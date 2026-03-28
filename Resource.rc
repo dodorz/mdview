@@ -126,10 +126,10 @@ END
 // Dialog
 //
 
-IDD_ABOUTBOX DIALOGEX 0, 0, 270, 150
-STYLE DS_SYSMODAL | DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "About Markdown Viewer"
-FONT 9, "Segoe UI", 400, 0, 0x1
+IDD_ABOUTBOX DIALOGEX 0, 0, 270, 114
+STYLE DS_SYSMODAL | DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About mdview"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
     DEFPUSHBUTTON   "OK",IDOK,210,120,50,14
     LTEXT           "By dodo, 2026 (forked from Thomas Fuhringer's original project)",IDC_STATIC,50,16,188,16
@@ -165,7 +165,7 @@ END
 
 STRINGTABLE
 BEGIN
-    IDS_APP                 "Markdown Viewer"
+    IDS_APP                 "mdview"
     IDS_MENU_FILE_EXIT      "Close Application"
     IDS_MENU_HELP_ABOUT     "Application Information"
 END
