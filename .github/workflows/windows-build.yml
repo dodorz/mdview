@@ -1,0 +1,152 @@
+name: Windows Build
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        shell: cmd
+        run: build.bat Release x64
+
+      - name: Package 7z archive
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: powershell
+        run: |
+          $packageDir = "dist\MarkdownViewer-windows-x64"
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          Copy-Item "x64\Release\mdview.exe" -Destination $packageDir -Force
+
+          if (Test-Path "README.md") {
+            Copy-Item "README.md" -Destination $packageDir -Force
+          }
+
+          if (Test-Path "Screenshot.jpg") {
+            Copy-Item "Screenshot.jpg" -Destination $packageDir -Force
+          }
+
+          if (Test-Path "7z.exe") {
+            & ".\7z.exe" a -t7z "dist\MarkdownViewer-windows-x64.7z" ".\$packageDir\*"
+          } else {
+            & "7z" a -t7z "dist\MarkdownViewer-windows-x64.7z" ".\$packageDir\*"
+          }
+
+      - name: Upload artifact
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: MarkdownViewer-windows-x64-7z
+          path: dist\MarkdownViewer-windows-x64.7z
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether to publish release
+        id: version_check
+        shell: powershell
+        run: |
+          $currentTag = "${{ github.ref_name }}"
+          $versionPattern = '^[vV]?(\d+)\.(\d+)\.(\d+)\.(\d+)$'
+
+          if ($currentTag -notmatch $versionPattern) {
+            throw "Tag '$currentTag' is not in the expected format vMAJOR.MINOR.PATCH.BUILD"
+          }
+
+          $currentVersion = [PSCustomObject]@{
+            Major = [int]$Matches[1]
+            Minor = [int]$Matches[2]
+            Patch = [int]$Matches[3]
+            Build = [int]$Matches[4]
+          }
+
+          $previousTag = git tag --sort=version:refname | Where-Object {
+            $_ -match $versionPattern -and $_ -ne $currentTag
+          } | Select-Object -Last 1
+
+          $shouldRelease = $true
+
+          if ($previousTag) {
+            $null = $previousTag -match $versionPattern
+            $previousVersion = [PSCustomObject]@{
+              Major = [int]$Matches[1]
+              Minor = [int]$Matches[2]
+              Patch = [int]$Matches[3]
+              Build = [int]$Matches[4]
+            }
+
+            if (
+              $currentVersion.Major -eq $previousVersion.Major -and
+              $currentVersion.Minor -eq $previousVersion.Minor -and
+              $currentVersion.Patch -eq $previousVersion.Patch
+            ) {
+              $shouldRelease = $false
+            }
+          }
+
+          "previous_tag=$previousTag" >> $env:GITHUB_OUTPUT
+          "should_release=$($shouldRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Download package artifact
+        if: steps.version_check.outputs.should_release == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: MarkdownViewer-windows-x64-7z
+          path: dist
+
+      - name: Publish GitHub Release
+        if: steps.version_check.outputs.should_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: MarkdownViewer ${{ github.ref_name }}
+          body: |
+            Release version: `${{ github.ref_name }}`
+
+            Package:
+            - `MarkdownViewer-windows-x64.7z`
+
+            Contents:
+            - `mdview.exe`
+            - `README.md`
+            - `Screenshot.jpg`
+
+            Previous version tag: `${{ steps.version_check.outputs.previous_tag || 'none' }}`
+          files: dist/MarkdownViewer-windows-x64.7z
+
+      - name: Skip release when only BUILD changed
+        if: steps.version_check.outputs.should_release != 'true'
+        shell: powershell
+        run: |
+          $previousTag = "${{ steps.version_check.outputs.previous_tag }}"
+          Write-Host "Skipping GitHub Release for ${{ github.ref_name }} because only BUILD changed compared with '$previousTag'."
