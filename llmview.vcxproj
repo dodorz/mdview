@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32"><Configuration>Debug</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32"><Configuration>Release</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{8BAA1A77-69EA-4D35-9D31-DF0FE72B0AF0}</ProjectGuid>
+    <RootNamespace>llmview</RootNamespace>
+    <TargetName>llmview</TargetName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration"><ConfigurationType>Application</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><CharacterSet>Unicode</CharacterSet><PlatformToolset>v145</PlatformToolset></PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration"><ConfigurationType>Application</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><CharacterSet>Unicode</CharacterSet><PlatformToolset>v145</PlatformToolset></PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration"><ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><WholeProgramOptimization>true</WholeProgramOptimization><CharacterSet>Unicode</CharacterSet><PlatformToolset>v145</PlatformToolset></PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration"><ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><WholeProgramOptimization>true</WholeProgramOptimization><CharacterSet>Unicode</CharacterSet><PlatformToolset>v145</PlatformToolset></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'"><Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" /></ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'"><Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" /></ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'"><Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" /></ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'"><Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" /></ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile><WarningLevel>Level3</WarningLevel><Optimization>Disabled</Optimization><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions></ClCompile>
+    <Link><GenerateDebugInformation>true</GenerateDebugInformation><AdditionalDependencies>Pathcch.lib;kernel32.lib;user32.lib;Shlwapi.lib;comdlg32.lib;shell32.lib;Comctl32.lib;Shcore.lib;Winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile><WarningLevel>Level3</WarningLevel><Optimization>Disabled</Optimization><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions></ClCompile>
+    <Link><GenerateDebugInformation>true</GenerateDebugInformation><AdditionalDependencies>Pathcch.lib;kernel32.lib;user32.lib;Shlwapi.lib;comdlg32.lib;shell32.lib;Comctl32.lib;Shcore.lib;Winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile><WarningLevel>Level3</WarningLevel><Optimization>MaxSpeed</Optimization><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions><PreprocessorDefinitions>UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions></ClCompile>
+    <Link><GenerateDebugInformation>true</GenerateDebugInformation><EnableCOMDATFolding>true</EnableCOMDATFolding><OptimizeReferences>true</OptimizeReferences><AdditionalDependencies>Pathcch.lib;kernel32.lib;user32.lib;Shlwapi.lib;comdlg32.lib;shell32.lib;Comctl32.lib;Shcore.lib;Winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile><WarningLevel>Level3</WarningLevel><Optimization>MaxSpeed</Optimization><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions><PreprocessorDefinitions>UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions></ClCompile>
+    <Link><GenerateDebugInformation>false</GenerateDebugInformation><EnableCOMDATFolding>true</EnableCOMDATFolding><OptimizeReferences>true</OptimizeReferences><AdditionalDependencies>Pathcch.lib;kernel32.lib;user32.lib;Shlwapi.lib;comdlg32.lib;shell32.lib;Comctl32.lib;Shcore.lib;Winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="llm_cld2.cpp" />
+    <ClCompile Include="llmview_main.c" />
+    <ClCompile Include="llm_translate.c" />
+    <ClCompile Include="viewer_common.c" />
+    <ClCompile Include="MarkDown2RichText.c" />
+    <ClCompile Include="cld2\internal\cldutil.cc" />
+    <ClCompile Include="cld2\internal\cldutil_shared.cc" />
+    <ClCompile Include="cld2\internal\compact_lang_det.cc" />
+    <ClCompile Include="cld2\internal\compact_lang_det_hint_code.cc" />
+    <ClCompile Include="cld2\internal\compact_lang_det_impl.cc" />
+    <ClCompile Include="cld2\internal\debug.cc" />
+    <ClCompile Include="cld2\internal\fixunicodevalue.cc" />
+    <ClCompile Include="cld2\internal\generated_entities.cc" />
+    <ClCompile Include="cld2\internal\generated_language.cc" />
+    <ClCompile Include="cld2\internal\generated_ulscript.cc" />
+    <ClCompile Include="cld2\internal\getonescriptspan.cc" />
+    <ClCompile Include="cld2\internal\lang_script.cc" />
+    <ClCompile Include="cld2\internal\offsetmap.cc" />
+    <ClCompile Include="cld2\internal\scoreonescriptspan.cc" />
+    <ClCompile Include="cld2\internal\tote.cc" />
+    <ClCompile Include="cld2\internal\utf8statetable.cc" />
+    <ClCompile Include="cld2\internal\cld_generated_cjk_uni_prop_80.cc" />
+    <ClCompile Include="cld2\internal\cld2_generated_cjk_compatible.cc" />
+    <ClCompile Include="cld2\internal\cld_generated_cjk_delta_bi_4.cc" />
+    <ClCompile Include="cld2\internal\generated_distinct_bi_0.cc" />
+    <ClCompile Include="cld2\internal\cld2_generated_quadchrome_2.cc" />
+    <ClCompile Include="cld2\internal\cld2_generated_deltaoctachrome.cc" />
+    <ClCompile Include="cld2\internal\cld2_generated_distinctoctachrome.cc" />
+    <ClCompile Include="cld2\internal\cld_generated_score_quad_octa_2.cc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="llm_cld2.h" />
+    <ClInclude Include="llm_translate.h" />
+    <ClInclude Include="viewer_common.h" />
+    <ClInclude Include="Resource.h" />
+    <ClInclude Include="cld2\public\compact_lang_det.h" />
+    <ClInclude Include="cld2\public\encodings.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="llmview.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="Icon.ico" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

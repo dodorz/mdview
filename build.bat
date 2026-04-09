@@ -1,39 +1,37 @@
 @echo off
-REM mdview 构建脚本
-REM 用法: build.bat [Configuration] [Platform] [MSBuild参数]
-REM 示例: build.bat Release x64
-REM        build.bat Debug Win32 /t:Rebuild
+:: mdview 构建脚本
+:: 用法: build.bat [Configuration] [Platform] [MSBuild参数]
+:: 示例: build.bat Release x64
+::        build.bat Debug Win32 /t:Rebuild
 
-REM 设置代码页为 GBK 以正确显示中文（Windows 中文系统默认）
+:: 设置代码页为 GBK 以正确显示中文（Windows 中文系统默认）
 ::chcp 936 >nul 2>&1
 
 setlocal enabledelayedexpansion
 
-REM 保存当前目录（脚本所在目录）
 set "SCRIPT_DIR=%~dp0"
 pushd "%SCRIPT_DIR%"
 
-REM 检查并终止正在运行的 mdview.exe 进程
-echo Checking for running mdview.exe processes...
-for /f "tokens=2" %%i in ('tasklist ^| findstr /i "mdview.exe"') do (
-    echo Terminating process ID: %%i
-    taskkill /f /pid %%i
-    if !ERRORLEVEL! EQU 0 (
-        echo Successfully terminated mdview.exe process %%i
-    ) else (
-        echo Failed to terminate mdview.exe process %%i
+for %%p in (mdview.exe llmview.exe) do (
+    echo Checking for running %%p processes...
+    for /f "tokens=2" %%i in ('tasklist ^| findstr /i "%%p"') do (
+        echo Terminating process ID: %%i
+        taskkill /f /pid %%i
+        if !ERRORLEVEL! EQU 0 (
+            echo Successfully terminated %%p process %%i
+        ) else (
+            echo Failed to terminate %%p process %%i
+        )
     )
 )
 
 echo Continuing with build...
 echo.
 
-REM 默认配置
 set "CONFIG=Release"
 set "PLATFORM=x64"
 set "MSBUILD_ARGS="
 
-REM 解析参数
 if not "%~1"=="" set "CONFIG=%~1"
 if not "%~2"=="" set "PLATFORM=%~2"
 if not "%~1"=="" shift
@@ -46,7 +44,6 @@ shift
 goto collect_extra_args
 :args_done
 
-REM 检查解决方案文件是否存在
 if not exist "mdview.sln" (
     echo Error: mdview.sln not found
     echo Current directory: %CD%
@@ -55,7 +52,6 @@ if not exist "mdview.sln" (
     exit /b 1
 )
 
-REM 查找 Visual Studio 开发命令环境
 set "VS_PATH="
 call :find_vsdevcmd
 if errorlevel 1 (
@@ -65,7 +61,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM 设置开发环境
 echo Setting up development environment...
 if defined VS_PATH (
     REM 调用 VsDevCmd.bat 并重定向所有输出
@@ -78,10 +73,8 @@ if defined VS_PATH (
     exit /b 1
 )
 
-REM 确保仍在项目目录
 cd /d "%SCRIPT_DIR%"
 
-REM 显示配置信息
 echo.
 echo ========================================
 echo Build Configuration
@@ -93,9 +86,8 @@ echo Toolchain: %VS_PATH%
 echo ========================================
 echo.
 
-REM 构建项目
 echo Starting build...
-msbuild "mdview.sln" /p:Configuration="%CONFIG%" /p:Platform="%PLATFORM%" %*
+msbuild "mdview.sln" /p:Configuration="%CONFIG%" /p:Platform="%PLATFORM%" %MSBUILD_ARGS%
 
 if %ERRORLEVEL% EQU 0 (
     echo.

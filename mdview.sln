@@ -5,6 +5,8 @@ VisualStudioVersion = 16.0.31410.357
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "mdview", "mdview.vcxproj", "{4AF54D52-3794-4564-9C21-60CD712C633D}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "llmview", "llmview.vcxproj", "{8BAA1A77-69EA-4D35-9D31-DF0FE72B0AF0}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Win32 = Debug|Win32
@@ -21,6 +23,14 @@ Global
 		{4AF54D52-3794-4564-9C21-60CD712C633D}.Release|Win32.Build.0 = Release|Win32
 		{4AF54D52-3794-4564-9C21-60CD712C633D}.Release|x64.ActiveCfg = Release|x64
 		{4AF54D52-3794-4564-9C21-60CD712C633D}.Release|x64.Build.0 = Release|x64
+		{8BAA1A77-69EA-4D35-9D31-DF0FE72B0AF0}.Debug|Win32.ActiveCfg = Debug|Win32
+		{8BAA1A77-69EA-4D35-9D31-DF0FE72B0AF0}.Debug|Win32.Build.0 = Debug|Win32
+		{8BAA1A77-69EA-4D35-9D31-DF0FE72B0AF0}.Debug|x64.ActiveCfg = Debug|x64
+		{8BAA1A77-69EA-4D35-9D31-DF0FE72B0AF0}.Debug|x64.Build.0 = Debug|x64
+		{8BAA1A77-69EA-4D35-9D31-DF0FE72B0AF0}.Release|Win32.ActiveCfg = Release|Win32
+		{8BAA1A77-69EA-4D35-9D31-DF0FE72B0AF0}.Release|Win32.Build.0 = Release|Win32
+		{8BAA1A77-69EA-4D35-9D31-DF0FE72B0AF0}.Release|x64.ActiveCfg = Release|x64
+		{8BAA1A77-69EA-4D35-9D31-DF0FE72B0AF0}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

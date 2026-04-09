@@ -1,5 +1,8 @@
 # Visual Studio / Visual C++ Project ignore file
 
+## include libraries
+cld2/
+
 ## Build output dirs
 [Dd]ebug/
 [Dd]ebugPublic/

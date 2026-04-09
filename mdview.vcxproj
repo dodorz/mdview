@@ -135,9 +135,11 @@
   <ItemGroup>
     <ClCompile Include="main.c" />
     <ClCompile Include="MarkDown2RichText.c" />
+    <ClCompile Include="viewer_common.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Resource.h" />
+    <ClInclude Include="viewer_common.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="Resource.rc" />

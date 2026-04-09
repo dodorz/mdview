@@ -8,13 +8,12 @@
 #include <RichEdit.h>
 #include <Shellapi.h>
 #include <shlwapi.h>
-#include <pathcch.h>
 #include <ShellScalingApi.h>
 
 #include "Resource.h"
+#include "viewer_common.h"
 
 #define MAX_LOADSTRING  100
-#define PATH_BUFFER_SIZE 4096
 #define MARGIN  20
 #define PREVIEW_BYTES (96 * 1024)
 #define WM_APP_RENDER_COMPLETE (WM_APP + 1)
@@ -55,16 +54,10 @@ static ULONGLONG g_lastEscPressTimestamp = 0;
 // Forward declarations
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 INT_PTR CALLBACK About(HWND, UINT, WPARAM, LPARAM);
-char* toU8(const LPWSTR szUTF16);
-int Scale(int iValue);
-
 BOOL FileOpen(WCHAR* lpszTextFileName);
 void FileOpenDialog();
 BOOL CreateToolBar();
 BOOL CreateStatusBar();
-void ShowLastError(LPCTSTR lpszContext);
-BOOL App_SaveState();
-BOOL App_RestoreState();
 DWORD WINAPI BackgroundRenderThread(LPVOID lpParam);
 
 int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nCmdShow)
@@ -121,7 +114,8 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 	CreateToolBar();
 	CreateStatusBar();
 
-	if (!App_RestoreState())
+	ViewerCommonContext commonCtx = { hMainWindow, hStatusBar, szAppName };
+	if (!ViewerCommon_RestoreState(&commonCtx))
 		ShowWindow(hMainWindow, nCmdShow);
 
 	UpdateWindow(hMainWindow);
@@ -172,7 +166,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		HMODULE mftedit = LoadLibraryA("Msftedit.dll");
 		if (!mftedit)
 		{
-			ShowLastError(L"Msftedit.dll Load Failed!");
+			ViewerCommon_ShowLastError(L"Msftedit.dll Load Failed!");
 			return 0;
 		}
 		hRichEdit = CreateWindowExW(0, MSFTEDIT_CLASS, L"",
@@ -183,7 +177,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 		if (hRichEdit == NULL)
 		{
-			ShowLastError(L"RichEdit Creation Failed!");
+			ViewerCommon_ShowLastError(L"RichEdit Creation Failed!");
 			return 0;
 		}
 		SendMessage(hRichEdit, EM_SETEVENTMASK, 0, ENM_LINK);
@@ -341,7 +335,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 	case WM_QUERYENDSESSION:
 	case WM_CLOSE:
-		App_SaveState();
+		{
+			ViewerCommonContext commonCtx = { hMainWindow, hStatusBar, szAppName };
+			ViewerCommon_SaveState(&commonCtx);
+		}
 		DestroyWindow(hwnd);
 		break;
 
@@ -375,7 +372,6 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 BOOL
 FileOpen(WCHAR* lpszTextFileName)
 {
-	HANDLE hFile, hMap;
 	SETTEXTEX se;
 	se.codepage = 65001;// CP_ACP;
 	se.flags = ST_DEFAULT;
@@ -387,9 +383,7 @@ FileOpen(WCHAR* lpszTextFileName)
 		hLoadThread = NULL;
 	}
 
-	WCHAR  lpBufferPathWithFile[PATH_BUFFER_SIZE] = L"";
-	WCHAR  lpBufferPathWithoutFile[PATH_BUFFER_SIZE] = L"";
-	WCHAR* lpFilePart = NULL;
+	ViewerLoadedFile loadedFile;
 	char* mdFull = NULL;
 	char* path = NULL;
 	char* previewRtf = NULL;
@@ -403,101 +397,25 @@ FileOpen(WCHAR* lpszTextFileName)
 		return 0;
 	}
 
-	hFile = CreateFileW(lpszTextFileName, GENERIC_READ, FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (hFile == INVALID_HANDLE_VALUE)
-	{
-		ShowLastError(L"Cannot open file.");
+	if (!ViewerCommon_LoadUtf8File(lpszTextFileName, &loadedFile)) {
 		return 0;
 	}
-
-	dwFilesize = GetFileSize(hFile, NULL);
-	if (dwFilesize == 0) {
-		ShowLastError(L"Invalid file.");
-		CloseHandle(hFile);
-		return 0;
-	}
-
-	hMap = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-	pFileView = MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
-
-	if (pFileView == NULL) {
-		ShowLastError(L"Cannot open file.");
-		CloseHandle(hMap);
-		CloseHandle(hFile);
-		return 0;
-	}
-
-	if (GetFullPathNameW(lpszTextFileName, PATH_BUFFER_SIZE, lpBufferPathWithFile, &lpFilePart) == 0) {
-		ShowLastError(L"Invalid file.");
-		UnmapViewOfFile(pFileView);
-		CloseHandle(hMap);
-		CloseHandle(hFile);
-		return 0;
-	}
-	memcpy(lpBufferPathWithoutFile, lpBufferPathWithFile, PATH_BUFFER_SIZE);
-	if (PathCchRemoveFileSpec(lpBufferPathWithoutFile, PATH_BUFFER_SIZE) != S_OK) {
-		ShowLastError(L"Invalid file.");
-		UnmapViewOfFile(pFileView);
-		CloseHandle(hMap);
-		CloseHandle(hFile);
-		return 0;
-	}
-	lstrcpyW(szCurrentFile, lpszTextFileName);
-
-	mdFull = malloc(dwFilesize + 2);
-	if (mdFull == NULL) {
-		ShowLastError(L"Out of memory.");
-		UnmapViewOfFile(pFileView);
-		CloseHandle(hMap);
-		CloseHandle(hFile);
-		return 0;
-	}
-	memcpy(mdFull, pFileView, dwFilesize);
-	*(mdFull + dwFilesize) = '\0';
-	*(mdFull + dwFilesize + 1) = '\0';
-
-	UnmapViewOfFile(pFileView);
-	CloseHandle(hMap);
-	CloseHandle(hFile);
-
-	path = toU8(lpBufferPathWithoutFile);
-	if (path == NULL) {
-		ShowLastError(L"String conversion failed.");
-		free(mdFull);
-		return 0;
-	}
+	lstrcpyW(szCurrentFile, loadedFile.fullPath);
+	dwFilesize = loadedFile.fileSize;
+	mdFull = loadedFile.contentUtf8;
+	path = loadedFile.directoryUtf8;
+	loadedFile.contentUtf8 = NULL;
+	loadedFile.directoryUtf8 = NULL;
 
 	TCHAR szTitle[MAX_PATH + 20];
 	szTitle[0] = 0;
-	StrCatW(szTitle, lpFilePart);
+	StrCatW(szTitle, loadedFile.filePart);
 	StrCatW(szTitle, L" - ");
 	StrCatW(szTitle, szAppName);
 	SendMessageW(hMainWindow, WM_SETTEXT, (WPARAM)0, (LPARAM)szTitle);
 
 	// Build a quick preview so the UI becomes responsive immediately.
-	size_t previewLen = (dwFilesize < PREVIEW_BYTES) ? (size_t)dwFilesize : (size_t)PREVIEW_BYTES;
-	if (previewLen == 0) {
-		previewLen = dwFilesize;
-	}
-	size_t safeLen = previewLen;
-	if (safeLen < (size_t)dwFilesize) {
-		// Avoid splitting UTF-8 multibyte characters.
-		while (safeLen > 0 && (mdFull[safeLen] & 0xC0) == 0x80) {
-			safeLen--;
-		}
-		// Try to end preview on a newline to keep paragraphs intact.
-		size_t backtrackLimit = (safeLen > 2048) ? safeLen - 2048 : 0;
-		size_t nl = safeLen;
-		while (nl > backtrackLimit && nl > 0 && mdFull[nl - 1] != '\n') {
-			nl--;
-		}
-		if (nl > 0 && nl > backtrackLimit) {
-			safeLen = nl;
-		}
-	}
-	else {
-		safeLen = (size_t)dwFilesize;
-	}
+	size_t safeLen = ViewerCommon_ComputePreviewLength(mdFull, (size_t)dwFilesize, PREVIEW_BYTES, 2048);
 
 	char savedChar = mdFull[safeLen];
 	mdFull[safeLen] = '\0';
@@ -557,6 +475,7 @@ FileOpen(WCHAR* lpszTextFileName)
 	if (previewRtf != NULL)
 		free(previewRtf);
 
+	ViewerCommon_FreeLoadedFile(&loadedFile);
 	result = TRUE;
 	return result;
 }
@@ -625,7 +544,7 @@ BOOL CreateToolBar()
 		hMainWindow, NULL, hInst, NULL);
 
 	if (hWndToolbar == NULL) {
-		ShowLastError(L"Toolbar Creation Failed!");
+		ViewerCommon_ShowLastError(L"Toolbar Creation Failed!");
 		return FALSE;
 	}
 	hImageList = ImageList_Create(bitmapSize, bitmapSize,   // Dimensions of individual bitmaps.
@@ -694,132 +613,5 @@ BOOL CreateStatusBar()
 	return TRUE;
 }
 
-BOOL App_SaveState()
-{
-	HKEY hKey;
-	WINDOWPLACEMENT wp;
-	TCHAR szSubkey[256];
-	lstrcpy(szSubkey, L"Software\\");
-	lstrcat(szSubkey, szAppName);
-	if (RegCreateKeyEx(HKEY_CURRENT_USER, szSubkey, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, NULL, &hKey, NULL) != ERROR_SUCCESS) {
-		ShowLastError(L"Creating Registry Key");
-		return FALSE;
-	}
-
-	wp.length = sizeof(WINDOWPLACEMENT);
-	GetWindowPlacement(hMainWindow, &wp);
-
-	if ((RegSetValueExW(hKey, L"flags", 0, REG_BINARY,
-		(PBYTE)&wp.flags, sizeof(wp.flags)) != ERROR_SUCCESS) ||
-		(RegSetValueExW(hKey, L"showCmd", 0, REG_BINARY,
-			(PBYTE)&wp.showCmd, sizeof(wp.showCmd)) != ERROR_SUCCESS) ||
-		(RegSetValueExW(hKey, L"rcNormalPosition", 0, REG_BINARY,
-			(PBYTE)&wp.rcNormalPosition, sizeof(wp.rcNormalPosition)) != ERROR_SUCCESS))
-	{
-		RegCloseKey(hKey);
-		return FALSE;
-	}
-
-	RegCloseKey(hKey);
-	return TRUE;
-}
-
-BOOL App_RestoreState()
-{
-	HKEY hKey;
-	DWORD dwSizeFlags, dwSizeShowCmd, dwSizeRcNormal;
-	WINDOWPLACEMENT wp;
-	TCHAR szSubkey[256];
-
-	lstrcpy(szSubkey, L"Software\\");
-	lstrcat(szSubkey, szAppName);
-	if (RegOpenKeyEx(HKEY_CURRENT_USER, szSubkey, 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS)
-	{
-		wp.length = sizeof(WINDOWPLACEMENT);
-		GetWindowPlacement(hMainWindow, &wp);
-		dwSizeFlags = sizeof(wp.flags);
-		dwSizeShowCmd = sizeof(wp.showCmd);
-		dwSizeRcNormal = sizeof(wp.rcNormalPosition);
-		if ((RegQueryValueExW(hKey, L"flags", NULL, NULL,
-			(PBYTE)&wp.flags, &dwSizeFlags) != ERROR_SUCCESS) ||
-			(RegQueryValueExW(hKey, L"showCmd", NULL, NULL,
-				(PBYTE)&wp.showCmd, &dwSizeShowCmd) != ERROR_SUCCESS) ||
-			(RegQueryValueExW(hKey, L"rcNormalPosition", NULL, NULL,
-				(PBYTE)&wp.rcNormalPosition, &dwSizeRcNormal) != ERROR_SUCCESS))
-		{
-			RegCloseKey(hKey);
-			return FALSE;
-		}
-		RegCloseKey(hKey);
-		if ((wp.rcNormalPosition.left <=
-			(GetSystemMetrics(SM_CXSCREEN) - GetSystemMetrics(SM_CXICON))) &&
-			(wp.rcNormalPosition.top <= (GetSystemMetrics(SM_CYSCREEN) - GetSystemMetrics(SM_CYICON))))
-		{
-			SetWindowPlacement(hMainWindow, &wp);
-			return TRUE;
-		}
-	}
-	return FALSE;
-}
-
-
-// converts a Wide Char (Unicode) string to UTF-8
-char*
-toU8(const LPWSTR szUTF16)
-{
-	if (szUTF16 == NULL)
-		return NULL;
-	if (*szUTF16 == L'\0')
-		return NULL;
-
-	int cbUTF8 = WideCharToMultiByte(CP_UTF8, 0, szUTF16, -1, NULL, 0, NULL, NULL);
-	if (cbUTF8 == 0) {
-		ShowLastError(L"String conversion failed.");
-		return NULL;
-	}
-	char* strTextUTF8 = (char*)malloc(cbUTF8);
-	int result = WideCharToMultiByte(CP_UTF8, 0, szUTF16, -1, strTextUTF8, cbUTF8, NULL, NULL);
-	if (result == 0) {
-		ShowLastError(L"String conversion failed.");
-		return NULL;
-	}
-	return strTextUTF8;
-}
-
-// converts a UTF-8 string to Wide Char (Unicode)
-LPWSTR
-toW(const char* strTextUTF8)
-{
-	if (strTextUTF8 == NULL)
-		return NULL;
-	if (*strTextUTF8 == '\0')
-		return NULL;
-
-	int cchUTF16 = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, strTextUTF8, -1, NULL, 0); // request buffer size
-	if (cchUTF16 == 0) {
-		ShowLastError(L"String conversion failed.");
-		return NULL;
-	}
-	LPWSTR szUTF16 = (LPWSTR)malloc(cchUTF16 * sizeof(WCHAR));
-	int result = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, strTextUTF8, -1, szUTF16, cchUTF16);
-	if (result == 0) {
-		ShowLastError(L"String conversion failed.");
-		return NULL;
-	}
-	return szUTF16;
-}
-
-void ShowLastError(LPCTSTR lpszContext)
-{
-	TCHAR buf[255];
-	FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, 0, GetLastError(), 0, buf, sizeof(buf) / sizeof(TCHAR), 0);
-	MessageBox(0, buf, lpszContext, 0);
-}
-
-int Scale(int iValue)
-{
-	int iDpi = GetDpiForWindow(hMainWindow);
-	return MulDiv(iValue, iDpi, 96);
-}
 
 
