@@ -16,7 +16,8 @@
 #define MARGIN 20
 #define PREVIEW_BYTES (96 * 1024)
 #define LLM_QUICK_BYTES (12 * 1024)
-#define LLM_WINDOW_BYTES (16 * 1024)
+#define LLM_WINDOW_BYTES (4 * 1024)
+#define LLM_INITIAL_SLICE_CHARS 1200
 #define LLM_SLICE_CHARS 4000
 #define IDM_VIEW_TRANSLATE 40024
 #define WM_APP_RENDER_COMPLETE (WM_APP + 1)
@@ -896,16 +897,19 @@ SelectNextTranslationSlice(TranslationSlice* slice)
 	}
 
 	end = start;
-	while (end < session->paragraphCount) {
-		size_t nextLen = total + session->paragraphs[end].originalLen + ((end > start) ? 2 : 0);
-		if (end > start && nextLen > LLM_SLICE_CHARS) {
-			break;
+	{
+		size_t sliceLimit = session->hasTranslatedContent ? LLM_SLICE_CHARS : LLM_INITIAL_SLICE_CHARS;
+		while (end < session->paragraphCount) {
+			size_t nextLen = total + session->paragraphs[end].originalLen + ((end > start) ? 2 : 0);
+			if (end > start && nextLen > sliceLimit) {
+				break;
+			}
+			if (session->paragraphs[end].state != PARAGRAPH_PENDING) {
+				break;
+			}
+			total = nextLen;
+			end++;
 		}
-		if (session->paragraphs[end].state != PARAGRAPH_PENDING) {
-			break;
-		}
-		total = nextLen;
-		end++;
 	}
 	end--;
 
