@@ -116,6 +116,7 @@ static size_t FindParagraphWindowEnd(const DocumentSession* session, int startPa
 static BOOL ComposeSliceMarkdown(const DocumentSession* session, int startParagraph, int endParagraph, char** markdownOut);
 static BOOL ApplySliceTranslation(DocumentSession* session, int startParagraph, int endParagraph, const char* translatedMarkdown, BOOL skippedByLanguage);
 static int SplitParagraphsInPlace(char* markdown, char** outParts, int maxParts);
+static void TrimWrappingCodeFence(char* markdown);
 static BOOL ComposeDisplayMarkdown(const DocumentSession* session, char** markdownOut);
 static BOOL BuildRenderSnapshot(RenderSnapshot* snapshot);
 static void FreeRenderSnapshot(RenderSnapshot* snapshot);
@@ -723,12 +724,19 @@ ApplySliceTranslation(DocumentSession* session, int startParagraph, int endParag
 
 	markdownCopy = _strdup(translatedMarkdown);
 	if (markdownCopy == NULL) return FALSE;
+	TrimWrappingCodeFence(markdownCopy);
 	parts = (char**)calloc(expected, sizeof(char*));
 	if (parts == NULL) {
 		free(markdownCopy);
 		return FALSE;
 	}
+	if (expected == 1) {
+		parts[0] = markdownCopy;
+		actual = 1;
+	}
+	else {
 	actual = SplitParagraphsInPlace(markdownCopy, parts, expected);
+	}
 	if (actual != expected) {
 		for (i = startParagraph; i <= endParagraph; i++) {
 			if (session->paragraphs[i].translated != NULL) free(session->paragraphs[i].translated);
@@ -772,6 +780,53 @@ SplitParagraphsInPlace(char* markdown, char** outParts, int maxParts)
 		cursor = next + 2;
 	}
 	return count;
+}
+
+static void
+TrimWrappingCodeFence(char* markdown)
+{
+	char* start;
+	char* firstNewline;
+	char* endFence;
+	size_t innerLen;
+
+	if (markdown == NULL) {
+		return;
+	}
+
+	start = markdown;
+	while (*start == '\r' || *start == '\n' || *start == ' ' || *start == '\t') {
+		start++;
+	}
+	if (strncmp(start, "```", 3) != 0) {
+		if (start != markdown) {
+			memmove(markdown, start, strlen(start) + 1);
+		}
+		return;
+	}
+
+	firstNewline = strpbrk(start, "\r\n");
+	if (firstNewline == NULL) {
+		return;
+	}
+	while (*firstNewline == '\r' || *firstNewline == '\n') {
+		firstNewline++;
+	}
+
+	endFence = strstr(firstNewline, "\n```");
+	if (endFence == NULL && firstNewline > markdown) {
+		endFence = strstr(firstNewline, "\r\n```");
+	}
+	if (endFence == NULL) {
+		return;
+	}
+
+	while (endFence > firstNewline && (endFence[-1] == '\r' || endFence[-1] == '\n')) {
+		endFence--;
+	}
+	innerLen = (size_t)(endFence - firstNewline);
+	memmove(markdown, firstNewline, innerLen);
+	markdown[innerLen] = '\0';
 }
 
 static BOOL

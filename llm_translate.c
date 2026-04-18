@@ -27,6 +27,8 @@ static BOOL ReadIniString(const WCHAR* iniPath, const WCHAR* section, const WCHA
 static BOOL BuildPrompt(const LlmConfig* config, char* buffer, size_t bufferCount);
 static BOOL EscapeJsonString(const char* input, DynamicBuffer* output);
 static char* JsonExtractString(const char* json, const char* key);
+static char* JsonExtractContentText(const char* json);
+static const char* SkipJsonWhitespace(const char* text);
 static BOOL HttpPostJson(const char* baseUrl, const char* apiKey, const char* bodyUtf8, char** responseUtf8);
 static BOOL DetectTargetLanguage(const LlmConfig* config, const char* utf8Text, BOOL* isTargetLanguage);
 static BOOL IsDetectedLanguageTarget(const char* detectedLang, const char* targetLang);
@@ -132,7 +134,7 @@ LlmTranslate_MaybeTranslateMarkdown(const LlmConfig* config, const char* markdow
 
 	if (!HttpPostJson(config->baseUrl, config->apiKey, requestBody.data, &responseJson)) goto cleanup;
 
-	content = JsonExtractString(responseJson, "\"content\"");
+	content = JsonExtractContentText(responseJson);
 	if (content == NULL || *content == '\0') goto cleanup;
 
 	*translatedUtf8 = content;
@@ -402,6 +404,67 @@ JsonExtractString(const char* json, const char* key)
 
 	DynamicBuffer_Free(&output);
 	return NULL;
+}
+
+static const char*
+SkipJsonWhitespace(const char* text)
+{
+	while (text != NULL && (*text == ' ' || *text == '\r' || *text == '\n' || *text == '\t')) {
+		text++;
+	}
+	return text;
+}
+
+static char*
+JsonExtractContentText(const char* json)
+{
+	const char* found;
+	const char* value;
+	char* text;
+
+	if (json == NULL) {
+		return NULL;
+	}
+
+	text = JsonExtractString(json, "\"output_text\"");
+	if (text != NULL && *text != '\0') {
+		return text;
+	}
+	if (text != NULL) {
+		free(text);
+	}
+
+	text = JsonExtractString(json, "\"content\"");
+	if (text != NULL && *text != '\0') {
+		return text;
+	}
+	if (text != NULL) {
+		free(text);
+	}
+
+	found = strstr(json, "\"content\"");
+	while (found != NULL) {
+		value = found + strlen("\"content\"");
+		while (*value && *value != ':') {
+			value++;
+		}
+		if (*value != ':') {
+			break;
+		}
+		value = SkipJsonWhitespace(value + 1);
+		if (*value == '[') {
+			text = JsonExtractString(value, "\"text\"");
+			if (text != NULL && *text != '\0') {
+				return text;
+			}
+			if (text != NULL) {
+				free(text);
+			}
+		}
+		found = strstr(found + strlen("\"content\""), "\"content\"");
+	}
+
+	return JsonExtractString(json, "\"text\"");
 }
 
 static BOOL
