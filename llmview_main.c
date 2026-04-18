@@ -921,10 +921,8 @@ SelectNextTranslationSlice(TranslationSlice* slice)
 {
 	DocumentSession* session;
 	int start = -1;
-	int end = -1;
 	int searchStart;
 	int searchEnd;
-	size_t total = 0;
 	int i;
 
 	memset(slice, 0, sizeof(*slice));
@@ -951,33 +949,14 @@ SelectNextTranslationSlice(TranslationSlice* slice)
 		return FALSE;
 	}
 
-	end = start;
-	{
-		size_t sliceLimit = session->hasTranslatedContent ? LLM_SLICE_CHARS : LLM_INITIAL_SLICE_CHARS;
-		while (end < session->paragraphCount) {
-			size_t nextLen = total + session->paragraphs[end].originalLen + ((end > start) ? 2 : 0);
-			if (end > start && nextLen > sliceLimit) {
-				break;
-			}
-			if (session->paragraphs[end].state != PARAGRAPH_PENDING) {
-				break;
-			}
-			total = nextLen;
-			end++;
-		}
-	}
-	end--;
-
 	slice->generation = session->generation;
 	slice->startParagraph = start;
-	slice->endParagraph = end;
-	if (!ComposeSliceMarkdown(session, start, end, &slice->markdown)) {
+	slice->endParagraph = start;
+	if (!ComposeSliceMarkdown(session, start, start, &slice->markdown)) {
 		LeaveCriticalSection(&g_sessionLock);
 		return FALSE;
 	}
-	for (i = start; i <= end; i++) {
-		session->paragraphs[i].state = PARAGRAPH_INFLIGHT;
-	}
+	session->paragraphs[start].state = PARAGRAPH_INFLIGHT;
 	LeaveCriticalSection(&g_sessionLock);
 	return TRUE;
 }
