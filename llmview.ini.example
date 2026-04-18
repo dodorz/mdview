@@ -1,0 +1,30 @@
+; Copy this file to llmview.ini and place it next to llmview.exe.
+; The app reads this file at startup when LLM translation is enabled.
+
+[LLM]
+; Provider name used to select the matching [Provider.<name>] section.
+provider=openai
+
+; Use a language tag such as zh-CN, en-US, or ja-JP.
+target_lang=zh-CN
+
+; {target_lang} will be replaced with the configured value above.
+; Keep the prompt focused on translation quality and Markdown preservation.
+system_prompt=Translate the Markdown into {target_lang}. Preserve headings, lists, links, tables, code fences, inline code, and paragraph breaks. Do not add commentary.
+
+[Provider.openai]
+; Chat-completions compatible endpoint expected by the current implementation.
+base_url=https://api.openai.com/v1/chat/completions
+
+; Replace with your real API key.
+api_key=YOUR_API_KEY_HERE
+
+; Replace with a model supported by your provider.
+model=gpt-4.1-mini
+
+; You can add more providers by creating more sections, for example:
+;
+; [Provider.myproxy]
+; base_url=https://example.com/v1/chat/completions
+; api_key=YOUR_PROXY_KEY
+; model=gpt-4.1-mini

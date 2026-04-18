@@ -129,6 +129,7 @@ LlmTranslate_MaybeTranslateMarkdown(const LlmConfig* config, const char* markdow
 	if (!DynamicBuffer_Append(&requestBody, "\",\"messages\":[{\"role\":\"system\",\"content\":\"")) goto cleanup;
 	if (!EscapeJsonString(prompt, &requestBody)) goto cleanup;
 	if (!DynamicBuffer_Append(&requestBody, "\"},{\"role\":\"user\",\"content\":\"")) goto cleanup;
+	if (!EscapeJsonString("Translate the Markdown below. If the input contains marker lines like <<<P00001>>> or <<<P00001_S001>>>, copy every marker line exactly, keep their order unchanged, and translate only the text between them. Do not add commentary. Do not wrap the answer in code fences.\n\n", &requestBody)) goto cleanup;
 	if (!EscapeJsonString(markdownUtf8, &requestBody)) goto cleanup;
 	if (!DynamicBuffer_Append(&requestBody, "\"}],\"temperature\":0.2}")) goto cleanup;
 

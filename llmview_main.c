@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wctype.h>
 
 #include "Resource.h"
 #include "viewer_common.h"
@@ -18,10 +19,15 @@
 #define LLM_QUICK_BYTES (12 * 1024)
 #define LLM_WINDOW_BYTES (4 * 1024)
 #define LLM_INITIAL_SLICE_CHARS 1200
-#define LLM_SLICE_CHARS 4000
-#define IDM_VIEW_TRANSLATE 40024
+#define LLM_INITIAL_SLICE_PARAGRAPHS 4
+#define LLM_SLICE_CHARS 2200
+#define LLM_SLICE_PARAGRAPHS 8
+#define LLM_SINGLE_PARAGRAPH_HARD_LIMIT 7000
+#define LLM_OVERSIZE_SPLIT_TARGET 1800
+#define LLM_OVERSIZE_SPLIT_MAX 2200
 #define WM_APP_RENDER_COMPLETE (WM_APP + 1)
 #define WM_APP_VISIBLE_RANGE_CHANGED (WM_APP + 2)
+#define WM_APP_AUTO_SAVE_RESULT (WM_APP + 3)
 
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
@@ -44,7 +50,19 @@ typedef struct ParagraphInfo {
 	size_t sourceStart;
 	size_t sourceEnd;
 	ParagraphState state;
+	unsigned short failCount;
 } ParagraphInfo;
+
+typedef struct TranslationSegment {
+	int paragraphIndex;
+	char marker[24];
+} TranslationSegment;
+
+typedef struct TextBuffer {
+	char* data;
+	size_t length;
+	size_t capacity;
+} TextBuffer;
 
 typedef struct DocumentSession {
 	DWORD generation;
@@ -71,6 +89,8 @@ typedef struct TranslationSlice {
 	int startParagraph;
 	int endParagraph;
 	char* markdown;
+	TranslationSegment* segments;
+	int segmentCount;
 } TranslationSlice;
 
 HINSTANCE hInst;
@@ -84,6 +104,7 @@ HWND hRichEdit = NULL;
 HWND hStatusBar = NULL;
 WNDPROC g_originalRichEditProc = NULL;
 WCHAR szCurrentFile[MAX_PATH] = L"";
+WCHAR g_pendingSavePath[PATH_BUFFER_SIZE] = L"";
 volatile LONG g_loadGeneration = 0;
 BOOL g_exitThreads = FALSE;
 BOOL g_translateToggle = TRUE;
@@ -95,6 +116,7 @@ HANDLE g_translateThread = NULL;
 DocumentSession* g_session = NULL;
 LlmConfig g_llmConfig;
 WCHAR g_lastConfigError[256] = L"";
+DWORD g_pendingSaveGeneration = 0;
 
 static const DWORD ESC_DOUBLE_PRESS_INTERVAL_MS = 600;
 static ULONGLONG g_lastEscPressTimestamp = 0;
@@ -113,10 +135,9 @@ static DocumentSession* CreateSession(const ViewerLoadedFile* loadedFile, DWORD 
 static void FreeSession(DocumentSession* session);
 static BOOL RenderInitialPreview(const DocumentSession* session);
 static size_t FindParagraphWindowEnd(const DocumentSession* session, int startParagraph, size_t targetChars);
-static BOOL ComposeSliceMarkdown(const DocumentSession* session, int startParagraph, int endParagraph, char** markdownOut);
-static BOOL ApplySliceTranslation(DocumentSession* session, int startParagraph, int endParagraph, const char* translatedMarkdown, BOOL skippedByLanguage);
-static int SplitParagraphsInPlace(char* markdown, char** outParts, int maxParts);
+static BOOL ApplySliceTranslation(DocumentSession* session, const TranslationSlice* slice, const char* translatedMarkdown, BOOL skippedByLanguage);
 static void TrimWrappingCodeFence(char* markdown);
+static void TrimBoundaryNewlines(char* text);
 static BOOL ComposeDisplayMarkdown(const DocumentSession* session, char** markdownOut);
 static BOOL BuildRenderSnapshot(RenderSnapshot* snapshot);
 static void FreeRenderSnapshot(RenderSnapshot* snapshot);
@@ -130,6 +151,29 @@ static void QueueRender(void);
 static void QueueTranslation(void);
 static void ReopenCurrentFile(void);
 static void ReplaceSession(DocumentSession* session);
+static BOOL TextBuffer_Reserve(TextBuffer* buffer, size_t extra);
+static BOOL TextBuffer_AppendN(TextBuffer* buffer, const char* text, size_t textLen);
+static BOOL TextBuffer_Append(TextBuffer* buffer, const char* text);
+static void TextBuffer_Free(TextBuffer* buffer);
+static size_t CountOversizeSegments(const char* text, size_t textLen);
+static size_t FindSplitPoint(const char* text, size_t start, size_t textLen, size_t targetLen, size_t maxLen);
+static BOOL BuildSegmentedSliceMarkdown(const DocumentSession* session, int startParagraph, int endParagraph, TranslationSegment* segments, int segmentCount, char** markdownOut);
+static BOOL ExtractMarkedSegmentTexts(const TranslationSlice* slice, char* translatedMarkdown, char** segmentTexts);
+static BOOL BuildLanguageTagSuffix(const char* targetLangUtf8, WCHAR* buffer, size_t bufferCount);
+static BOOL LoadResourceString(UINT stringId, WCHAR* buffer, size_t bufferCount);
+static void SetStatusBarTextResource(UINT stringId);
+static int MessageBoxResource(HWND owner, UINT textId, UINT type);
+static BOOL GetDefaultSavePath(WCHAR* buffer, size_t bufferCount);
+static BOOL PromptSavePath(WCHAR* pathBuffer, DWORD pathBufferCount);
+static BOOL WriteUtf8TextFile(const WCHAR* filePath, const char* textUtf8);
+static BOOL SaveCurrentSessionToPath(const WCHAR* filePath);
+static BOOL IsSessionTranslationComplete(const DocumentSession* session);
+static int GetSessionTranslationPercent(const DocumentSession* session);
+static int ShowPartialSaveDialog(int percentComplete);
+static void ClearPendingSaveRequest(void);
+static void StartDeferredSave(const WCHAR* filePath, DWORD generation);
+static BOOL TryAutoSaveCompletedTranslation(DWORD generation);
+static BOOL HandleSaveTranslatedCommand(void);
 
 int APIENTRY
 WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
@@ -168,14 +212,14 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdS
 	wc.hIconSm = hIcon;
 
 	if (!RegisterClassEx(&wc)) {
-		MessageBox(NULL, L"Window Registration Failed!", szAppName, MB_ICONERROR | MB_OK);
+		MessageBoxResource(NULL, IDS_MSG_WINDOW_REG_FAILED, MB_ICONERROR | MB_OK);
 		return 0;
 	}
 
 	hMainWindow = CreateWindow(szWindowClass, szAppName, WS_OVERLAPPEDWINDOW,
 		CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, NULL, hMainMenu, hInstance, NULL);
 	if (hMainWindow == NULL) {
-		MessageBox(NULL, L"Window Creation Failed!", szAppName, MB_ICONERROR | MB_OK);
+		MessageBoxResource(NULL, IDS_MSG_WINDOW_CREATE_FAILED, MB_ICONERROR | MB_OK);
 		return 0;
 	}
 
@@ -279,6 +323,9 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		case IDM_FILE_REFRESH:
 			ReopenCurrentFile();
 			break;
+		case IDM_FILE_SAVE_TRANSLATED:
+			HandleSaveTranslatedCommand();
+			break;
 		case IDM_VIEW_TRANSLATE:
 			g_translateToggle = !g_translateToggle;
 			UpdateTranslateToggleUi();
@@ -292,10 +339,13 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	case WM_MENUSELECT:
 		switch (LOWORD(wParam)) {
 		case IDM_FILE_OPEN:
-			SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Open a new file");
+			SetStatusBarTextResource(IDS_STATUS_OPEN_FILE);
+			break;
+		case IDM_FILE_SAVE_TRANSLATED:
+			SetStatusBarTextResource(IDS_STATUS_SAVE_TRANSLATED);
 			break;
 		case IDM_VIEW_TRANSLATE:
-			SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Toggle LLM translation");
+			SetStatusBarTextResource(IDS_STATUS_TOGGLE_TRANSLATE);
 			break;
 		default:
 			SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"");
@@ -360,13 +410,13 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 				SendMessageA(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)rtfResult);
 				EnterCriticalSection(&g_sessionLock);
 				if (g_session != NULL && g_session->generation == generation && g_session->translationEnabled && g_session->hasTranslatedContent && VisibleRangeHasPending(g_session)) {
-					SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Translated visible text shown. Remaining paragraphs are translating...");
+					SetStatusBarTextResource(IDS_STATUS_TRANSLATING_REST);
 				}
 				else if (g_session != NULL && g_session->generation == generation && g_session->translationEnabled && !g_session->hasTranslatedContent) {
-					SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Preview loaded. Translating visible text in background...");
+					SetStatusBarTextResource(IDS_STATUS_PREVIEW_TRANSLATING);
 				}
 				else {
-					SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Document loaded.");
+					SetStatusBarTextResource(IDS_STATUS_DOCUMENT_LOADED);
 				}
 				LeaveCriticalSection(&g_sessionLock);
 			}
@@ -376,6 +426,15 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	}
 	case WM_APP_VISIBLE_RANGE_CHANGED:
 		UpdateVisibleRangeFromScroll();
+		return 0;
+	case WM_APP_AUTO_SAVE_RESULT:
+		if (wParam) {
+			SetStatusBarTextResource(IDS_STATUS_AUTOSAVED);
+		}
+		else {
+			ClearPendingSaveRequest();
+			MessageBoxResource(hwnd, IDS_MSG_AUTOSAVE_FAILED, MB_ICONERROR | MB_OK);
+		}
 		return 0;
 	case WM_QUERYENDSESSION:
 	case WM_CLOSE:
@@ -483,6 +542,7 @@ FileOpen(WCHAR* lpszTextFileName)
 	}
 
 	ReplaceSession(session);
+	ClearPendingSaveRequest();
 	RenderInitialPreview(session);
 	UpdateVisibleRangeFromScroll();
 	if (session->translationEnabled) {
@@ -492,6 +552,196 @@ FileOpen(WCHAR* lpszTextFileName)
 		QueueRender();
 	}
 	return TRUE;
+}
+
+static BOOL
+IsSessionTranslationComplete(const DocumentSession* session)
+{
+	int i;
+
+	if (session == NULL || !session->translationEnabled) {
+		return TRUE;
+	}
+	for (i = 0; i < session->paragraphCount; i++) {
+		if (session->paragraphs[i].state != PARAGRAPH_DONE && session->paragraphs[i].state != PARAGRAPH_SKIPPED) {
+			return FALSE;
+		}
+	}
+	return TRUE;
+}
+
+static int
+GetSessionTranslationPercent(const DocumentSession* session)
+{
+	size_t translatedChars = 0;
+	size_t totalChars = 0;
+	int i;
+
+	if (session == NULL) {
+		return 0;
+	}
+
+	for (i = 0; i < session->paragraphCount; i++) {
+		totalChars += session->paragraphs[i].originalLen;
+		if (session->paragraphs[i].state == PARAGRAPH_DONE || session->paragraphs[i].state == PARAGRAPH_SKIPPED) {
+			translatedChars += session->paragraphs[i].originalLen;
+		}
+	}
+
+	if (totalChars == 0) {
+		return 100;
+	}
+	return (int)((translatedChars * 100 + (totalChars / 2)) / totalChars);
+}
+
+static BOOL
+LoadResourceString(UINT stringId, WCHAR* buffer, size_t bufferCount)
+{
+	if (buffer == NULL || bufferCount == 0) {
+		return FALSE;
+	}
+	buffer[0] = L'\0';
+	return LoadStringW(hInst, stringId, buffer, (int)bufferCount) > 0;
+}
+
+static void
+SetStatusBarTextResource(UINT stringId)
+{
+	WCHAR text[512];
+
+	if (hStatusBar == NULL) {
+		return;
+	}
+	if (LoadResourceString(stringId, text, _countof(text))) {
+		SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)text);
+	}
+}
+
+static int
+MessageBoxResource(HWND owner, UINT textId, UINT type)
+{
+	WCHAR text[512];
+
+	if (!LoadResourceString(textId, text, _countof(text))) {
+		return 0;
+	}
+	return MessageBoxW(owner, text, szAppName, type);
+}
+
+static int
+ShowPartialSaveDialog(int percentComplete)
+{
+	enum {
+		ID_SAVE_LATER = 1002
+	};
+	WCHAR mainInstruction[128];
+	WCHAR content[512];
+	WCHAR fallback[512];
+	WCHAR saveLater[64];
+	TASKDIALOGCONFIG config;
+	TASKDIALOG_BUTTON buttons[3];
+	int buttonResult = IDCANCEL;
+	HRESULT hr;
+
+	if (!LoadResourceString(IDS_DIALOG_PARTIAL_MAIN, mainInstruction, _countof(mainInstruction))) {
+		wcscpy_s(mainInstruction, _countof(mainInstruction), L"Save translated file");
+	}
+	if (!LoadResourceString(IDS_DIALOG_PARTIAL_CONTENT, content, _countof(content))) {
+		wcscpy_s(content, _countof(content), L"Current document is about %d%% translated.");
+	}
+	if (!LoadResourceString(IDS_DIALOG_PARTIAL_FALLBACK, fallback, _countof(fallback))) {
+		wcscpy_s(fallback, _countof(fallback), L"Current document is only partially translated.");
+	}
+	if (!LoadResourceString(IDS_BTN_SAVE_LATER, saveLater, _countof(saveLater))) {
+		wcscpy_s(saveLater, _countof(saveLater), L"Save Later");
+	}
+	{
+		WCHAR formatted[512];
+		_snwprintf_s(formatted, _countof(formatted), _TRUNCATE, content, percentComplete);
+		wcscpy_s(content, _countof(content), formatted);
+	}
+
+	ZeroMemory(&config, sizeof(config));
+	ZeroMemory(buttons, sizeof(buttons));
+	config.cbSize = sizeof(config);
+	config.hwndParent = hMainWindow;
+	config.hInstance = hInst;
+	config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+	config.dwCommonButtons = 0;
+	config.pszWindowTitle = szAppName;
+	config.pszMainInstruction = mainInstruction;
+	config.pszContent = content;
+	buttons[0].nButtonID = IDOK;
+	buttons[0].pszButtonText = L"OK";
+	buttons[1].nButtonID = IDCANCEL;
+	buttons[1].pszButtonText = L"Cancel";
+	buttons[2].nButtonID = ID_SAVE_LATER;
+	buttons[2].pszButtonText = saveLater;
+	config.pButtons = buttons;
+	config.cButtons = _countof(buttons);
+	config.nDefaultButton = IDOK;
+
+	hr = TaskDialogIndirect(&config, &buttonResult, NULL, NULL);
+	if (FAILED(hr)) {
+		return MessageBoxW(hMainWindow, fallback, szAppName, MB_ICONQUESTION | MB_YESNOCANCEL);
+	}
+
+	return buttonResult;
+}
+
+static void
+ClearPendingSaveRequest(void)
+{
+	EnterCriticalSection(&g_sessionLock);
+	g_pendingSavePath[0] = L'\0';
+	g_pendingSaveGeneration = 0;
+	LeaveCriticalSection(&g_sessionLock);
+}
+
+static void
+StartDeferredSave(const WCHAR* filePath, DWORD generation)
+{
+	EnterCriticalSection(&g_sessionLock);
+	wcsncpy_s(g_pendingSavePath, _countof(g_pendingSavePath), filePath, _TRUNCATE);
+	g_pendingSaveGeneration = generation;
+	LeaveCriticalSection(&g_sessionLock);
+}
+
+static BOOL
+TryAutoSaveCompletedTranslation(DWORD generation)
+{
+	WCHAR savePath[PATH_BUFFER_SIZE];
+	char* markdown = NULL;
+	BOOL shouldSave = FALSE;
+	BOOL success;
+
+	savePath[0] = L'\0';
+	EnterCriticalSection(&g_sessionLock);
+	if (g_session != NULL &&
+		g_session->generation == generation &&
+		g_pendingSaveGeneration == generation &&
+		g_pendingSavePath[0] != L'\0' &&
+		IsSessionTranslationComplete(g_session) &&
+		ComposeDisplayMarkdown(g_session, &markdown))
+	{
+		wcsncpy_s(savePath, _countof(savePath), g_pendingSavePath, _TRUNCATE);
+		g_pendingSavePath[0] = L'\0';
+		g_pendingSaveGeneration = 0;
+		shouldSave = TRUE;
+	}
+	LeaveCriticalSection(&g_sessionLock);
+
+	if (!shouldSave) {
+		if (markdown != NULL) {
+			free(markdown);
+		}
+		return FALSE;
+	}
+
+	success = WriteUtf8TextFile(savePath, markdown);
+	free(markdown);
+	PostMessage(hMainWindow, WM_APP_AUTO_SAVE_RESULT, (WPARAM)success, 0);
+	return success;
 }
 
 static void
@@ -649,7 +899,7 @@ RenderInitialPreview(const DocumentSession* session)
 
 	SendMessageA(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)previewRtf);
 	free(previewRtf);
-	SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)(session->translationEnabled ? L"Preview loaded. Translating visible text in background..." : L"Preview loaded, rendering full document..."));
+	SetStatusBarTextResource(session->translationEnabled ? IDS_STATUS_PREVIEW_TRANSLATING : IDS_STATUS_PREVIEW_RENDERING);
 	return TRUE;
 }
 
@@ -673,49 +923,78 @@ FindParagraphWindowEnd(const DocumentSession* session, int startParagraph, size_
 
 
 static BOOL
-ComposeSliceMarkdown(const DocumentSession* session, int startParagraph, int endParagraph, char** markdownOut)
+BuildSegmentedSliceMarkdown(const DocumentSession* session, int startParagraph, int endParagraph, TranslationSegment* segments, int segmentCount, char** markdownOut)
 {
-	size_t total = 0;
-	char* markdown;
-	size_t offset = 0;
-	int i;
+	TextBuffer markdown = { 0 };
+	int segmentIndex = 0;
+	int paragraphIndex;
 
 	*markdownOut = NULL;
-	for (i = startParagraph; i <= endParagraph; i++) {
-		total += session->paragraphs[i].originalLen;
-		if (i > startParagraph) total += 2;
-	}
-	markdown = (char*)malloc(total + 1);
-	if (markdown == NULL) return FALSE;
+	for (paragraphIndex = startParagraph; paragraphIndex <= endParagraph; paragraphIndex++) {
+		size_t startOffset = 0;
+		size_t paragraphLen = session->paragraphs[paragraphIndex].originalLen;
+		const char* paragraphText = session->paragraphs[paragraphIndex].original;
 
-	for (i = startParagraph; i <= endParagraph; i++) {
-		if (i > startParagraph) {
-			memcpy(markdown + offset, "\n\n", 2);
-			offset += 2;
+		if (paragraphLen > LLM_SINGLE_PARAGRAPH_HARD_LIMIT) {
+			while (startOffset < paragraphLen && segmentIndex < segmentCount) {
+				size_t splitPoint = FindSplitPoint(paragraphText, startOffset, paragraphLen, LLM_OVERSIZE_SPLIT_TARGET, LLM_OVERSIZE_SPLIT_MAX);
+				if (splitPoint <= startOffset) {
+					splitPoint = paragraphLen;
+				}
+				size_t chunkLen = splitPoint - startOffset;
+				if (!TextBuffer_Append(&markdown, segments[segmentIndex].marker) ||
+					!TextBuffer_Append(&markdown, "\n") ||
+					!TextBuffer_AppendN(&markdown, paragraphText + startOffset, chunkLen) ||
+					!TextBuffer_Append(&markdown, "\n\n")) {
+					TextBuffer_Free(&markdown);
+					return FALSE;
+				}
+				startOffset = splitPoint;
+				segmentIndex++;
+			}
 		}
-		memcpy(markdown + offset, session->paragraphs[i].original, session->paragraphs[i].originalLen);
-		offset += session->paragraphs[i].originalLen;
+		else {
+			if (segmentIndex >= segmentCount ||
+				!TextBuffer_Append(&markdown, segments[segmentIndex].marker) ||
+				!TextBuffer_Append(&markdown, "\n") ||
+				!TextBuffer_AppendN(&markdown, paragraphText, paragraphLen) ||
+				!TextBuffer_Append(&markdown, "\n\n")) {
+				TextBuffer_Free(&markdown);
+				return FALSE;
+			}
+			segmentIndex++;
+		}
 	}
-	markdown[offset] = '\0';
-	*markdownOut = markdown;
+
+	if (segmentIndex != segmentCount) {
+		TextBuffer_Free(&markdown);
+		return FALSE;
+	}
+	*markdownOut = markdown.data;
 	return TRUE;
 }
 
 static BOOL
-ApplySliceTranslation(DocumentSession* session, int startParagraph, int endParagraph, const char* translatedMarkdown, BOOL skippedByLanguage)
+ApplySliceTranslation(DocumentSession* session, const TranslationSlice* slice, const char* translatedMarkdown, BOOL skippedByLanguage)
 {
-	int expected = endParagraph - startParagraph + 1;
-	char** parts;
+	TextBuffer* paragraphBuffers;
+	char** segmentTexts;
 	char* markdownCopy;
-	int actual;
+	int paragraphSpan;
 	int i;
+	BOOL success = FALSE;
+
+	if (session == NULL || slice == NULL) {
+		return FALSE;
+	}
 
 	if (skippedByLanguage) {
-		for (i = startParagraph; i <= endParagraph; i++) {
+		for (i = slice->startParagraph; i <= slice->endParagraph; i++) {
 			if (session->paragraphs[i].translated != NULL) free(session->paragraphs[i].translated);
 			session->paragraphs[i].translated = _strdup(session->paragraphs[i].original);
 			session->paragraphs[i].translatedLen = session->paragraphs[i].originalLen;
 			session->paragraphs[i].state = PARAGRAPH_SKIPPED;
+			session->paragraphs[i].failCount = 0;
 		}
 		session->hasTranslatedContent = TRUE;
 		session->deferInitialBackgroundRender = FALSE;
@@ -723,63 +1002,69 @@ ApplySliceTranslation(DocumentSession* session, int startParagraph, int endParag
 	}
 
 	markdownCopy = _strdup(translatedMarkdown);
-	if (markdownCopy == NULL) return FALSE;
+	if (markdownCopy == NULL) {
+		return FALSE;
+	}
 	TrimWrappingCodeFence(markdownCopy);
-	parts = (char**)calloc(expected, sizeof(char*));
-	if (parts == NULL) {
+	paragraphSpan = slice->endParagraph - slice->startParagraph + 1;
+	paragraphBuffers = (TextBuffer*)calloc(paragraphSpan, sizeof(TextBuffer));
+	segmentTexts = (char**)calloc(slice->segmentCount, sizeof(char*));
+	if (paragraphBuffers == NULL || segmentTexts == NULL) {
 		free(markdownCopy);
+		free(paragraphBuffers);
+		free(segmentTexts);
 		return FALSE;
 	}
-	if (expected == 1) {
-		parts[0] = markdownCopy;
-		actual = 1;
-	}
-	else {
-	actual = SplitParagraphsInPlace(markdownCopy, parts, expected);
-	}
-	if (actual != expected) {
-		for (i = startParagraph; i <= endParagraph; i++) {
-			if (session->paragraphs[i].translated != NULL) free(session->paragraphs[i].translated);
-			session->paragraphs[i].translated = _strdup(session->paragraphs[i].original);
-			session->paragraphs[i].translatedLen = session->paragraphs[i].originalLen;
-			session->paragraphs[i].state = PARAGRAPH_SKIPPED;
-		}
-		free(parts);
-		free(markdownCopy);
-		return FALSE;
+	if (!ExtractMarkedSegmentTexts(slice, markdownCopy, segmentTexts)) {
+		goto cleanup;
 	}
 
-	for (i = 0; i < expected; i++) {
-		int paragraphIndex = startParagraph + i;
-		if (session->paragraphs[paragraphIndex].translated != NULL) free(session->paragraphs[paragraphIndex].translated);
-		session->paragraphs[paragraphIndex].translated = _strdup(parts[i]);
-		session->paragraphs[paragraphIndex].translatedLen = strlen(parts[i]);
-		session->paragraphs[paragraphIndex].state = PARAGRAPH_DONE;
+	for (i = 0; i < slice->segmentCount; i++) {
+		int paragraphOffset = slice->segments[i].paragraphIndex - slice->startParagraph;
+		TrimBoundaryNewlines(segmentTexts[i]);
+		if (!TextBuffer_Append(&paragraphBuffers[paragraphOffset], segmentTexts[i])) {
+			goto cleanup;
+		}
 	}
+
+	for (i = 0; i < paragraphSpan; i++) {
+		int paragraphIndex = slice->startParagraph + i;
+		char* translatedText = paragraphBuffers[i].data;
+		if (translatedText == NULL) {
+			goto cleanup;
+		}
+		if (session->paragraphs[paragraphIndex].translated != NULL) free(session->paragraphs[paragraphIndex].translated);
+		session->paragraphs[paragraphIndex].translated = _strdup(translatedText);
+		if (session->paragraphs[paragraphIndex].translated == NULL) {
+			goto cleanup;
+		}
+		session->paragraphs[paragraphIndex].translatedLen = strlen(session->paragraphs[paragraphIndex].translated);
+		session->paragraphs[paragraphIndex].state = PARAGRAPH_DONE;
+		session->paragraphs[paragraphIndex].failCount = 0;
+	}
+
 	session->hasTranslatedContent = TRUE;
 	session->deferInitialBackgroundRender = FALSE;
+	success = TRUE;
 
-	free(parts);
-	free(markdownCopy);
-	return TRUE;
-}
-
-static int
-SplitParagraphsInPlace(char* markdown, char** outParts, int maxParts)
-{
-	int count = 0;
-	char* cursor = markdown;
-
-	while (cursor != NULL && *cursor != '\0' && count < maxParts) {
-		char* next = strstr(cursor, "\n\n");
-		outParts[count++] = cursor;
-		if (next == NULL) {
-			break;
+cleanup:
+	if (!success) {
+		for (i = slice->startParagraph; i <= slice->endParagraph; i++) {
+			if (session->paragraphs[i].state == PARAGRAPH_INFLIGHT) {
+				session->paragraphs[i].state = PARAGRAPH_PENDING;
+				if (session->paragraphs[i].failCount < 255) {
+					session->paragraphs[i].failCount++;
+				}
+			}
 		}
-		*next = '\0';
-		cursor = next + 2;
 	}
-	return count;
+	for (i = 0; i < paragraphSpan; i++) {
+		TextBuffer_Free(&paragraphBuffers[i]);
+	}
+	free(paragraphBuffers);
+	free(segmentTexts);
+	free(markdownCopy);
+	return success;
 }
 
 static void
@@ -827,6 +1112,180 @@ TrimWrappingCodeFence(char* markdown)
 	innerLen = (size_t)(endFence - firstNewline);
 	memmove(markdown, firstNewline, innerLen);
 	markdown[innerLen] = '\0';
+}
+
+static void
+TrimBoundaryNewlines(char* text)
+{
+	char* start = text;
+	char* end;
+
+	if (text == NULL) {
+		return;
+	}
+	while (*start == '\r' || *start == '\n') {
+		start++;
+	}
+	if (start != text) {
+		memmove(text, start, strlen(start) + 1);
+	}
+	end = text + strlen(text);
+	while (end > text && (end[-1] == '\r' || end[-1] == '\n')) {
+		end--;
+	}
+	*end = '\0';
+}
+
+static BOOL
+TextBuffer_Reserve(TextBuffer* buffer, size_t extra)
+{
+	size_t required;
+	size_t newCapacity;
+	char* newData;
+
+	required = buffer->length + extra + 1;
+	if (required <= buffer->capacity) {
+		return TRUE;
+	}
+	newCapacity = (buffer->capacity == 0) ? 1024 : buffer->capacity;
+	while (newCapacity < required) {
+		newCapacity *= 2;
+	}
+	newData = (char*)realloc(buffer->data, newCapacity);
+	if (newData == NULL) {
+		return FALSE;
+	}
+	buffer->data = newData;
+	buffer->capacity = newCapacity;
+	return TRUE;
+}
+
+static BOOL
+TextBuffer_AppendN(TextBuffer* buffer, const char* text, size_t textLen)
+{
+	if (!TextBuffer_Reserve(buffer, textLen)) {
+		return FALSE;
+	}
+	memcpy(buffer->data + buffer->length, text, textLen);
+	buffer->length += textLen;
+	buffer->data[buffer->length] = '\0';
+	return TRUE;
+}
+
+static BOOL
+TextBuffer_Append(TextBuffer* buffer, const char* text)
+{
+	return TextBuffer_AppendN(buffer, text, strlen(text));
+}
+
+static void
+TextBuffer_Free(TextBuffer* buffer)
+{
+	if (buffer != NULL && buffer->data != NULL) {
+		free(buffer->data);
+		buffer->data = NULL;
+		buffer->length = 0;
+		buffer->capacity = 0;
+	}
+}
+
+static size_t
+FindSplitPoint(const char* text, size_t start, size_t textLen, size_t targetLen, size_t maxLen)
+{
+	size_t upperBound;
+	size_t preferred;
+	size_t pos;
+
+	if (start >= textLen) {
+		return textLen;
+	}
+
+	upperBound = start + maxLen;
+	if (upperBound > textLen) {
+		upperBound = textLen;
+	}
+	preferred = start + targetLen;
+	if (preferred > upperBound) {
+		preferred = upperBound;
+	}
+
+	for (pos = upperBound; pos > preferred; pos--) {
+		if (text[pos - 1] == '\n') {
+			return pos;
+		}
+	}
+	for (pos = upperBound; pos > start + 1; pos--) {
+		unsigned char ch = (unsigned char)text[pos - 1];
+		if (ch == '\n' || ch == ' ' || ch == '\t' || ch == '.' || ch == '!' || ch == '?' || ch == ';' || ch == ',' || ch == ':') {
+			return pos;
+		}
+		if (pos >= 3 && (unsigned char)text[pos - 3] == 0xE3 && (unsigned char)text[pos - 2] == 0x80 &&
+			((unsigned char)text[pos - 1] == 0x82 || (unsigned char)text[pos - 1] == 0x81 || (unsigned char)text[pos - 1] == 0x9F || (unsigned char)text[pos - 1] == 0x9B)) {
+			return pos;
+		}
+	}
+
+	pos = upperBound;
+	while (pos > start && (((unsigned char)text[pos] & 0xC0) == 0x80)) {
+		pos--;
+	}
+	if (pos <= start) {
+		pos = upperBound;
+	}
+	return pos;
+}
+
+static size_t
+CountOversizeSegments(const char* text, size_t textLen)
+{
+	size_t count = 0;
+	size_t start = 0;
+
+	while (start < textLen) {
+		size_t next = FindSplitPoint(text, start, textLen, LLM_OVERSIZE_SPLIT_TARGET, LLM_OVERSIZE_SPLIT_MAX);
+		if (next <= start) {
+			next = textLen;
+		}
+		start = next;
+		count++;
+	}
+	return count;
+}
+
+static BOOL
+ExtractMarkedSegmentTexts(const TranslationSlice* slice, char* translatedMarkdown, char** segmentTexts)
+{
+	char* cursor = translatedMarkdown;
+	int i;
+
+	for (i = 0; i < slice->segmentCount; i++) {
+		char* markerPos = strstr(cursor, slice->segments[i].marker);
+		char* contentStart;
+		char* nextMarker = NULL;
+
+		if (markerPos == NULL) {
+			return FALSE;
+		}
+		contentStart = markerPos + strlen(slice->segments[i].marker);
+		while (*contentStart == '\r' || *contentStart == '\n') {
+			contentStart++;
+		}
+		if (i + 1 < slice->segmentCount) {
+			char* trimEnd;
+			nextMarker = strstr(contentStart, slice->segments[i + 1].marker);
+			if (nextMarker == NULL) {
+				return FALSE;
+			}
+			trimEnd = nextMarker;
+			while (trimEnd > contentStart && (trimEnd[-1] == '\r' || trimEnd[-1] == '\n')) {
+				trimEnd--;
+			}
+			*trimEnd = '\0';
+			cursor = nextMarker;
+		}
+		segmentTexts[i] = contentStart;
+	}
+	return TRUE;
 }
 
 static BOOL
@@ -921,8 +1380,15 @@ SelectNextTranslationSlice(TranslationSlice* slice)
 {
 	DocumentSession* session;
 	int start = -1;
+	int end = -1;
 	int searchStart;
 	int searchEnd;
+	int buildEnd;
+	size_t charLimit;
+	int paragraphLimit;
+	size_t totalChars = 0;
+	int paragraphCount = 0;
+	size_t segmentCount = 0;
 	int i;
 
 	memset(slice, 0, sizeof(*slice));
@@ -937,6 +1403,7 @@ SelectNextTranslationSlice(TranslationSlice* slice)
 	if (searchStart < 0) searchStart = 0;
 	searchEnd = session->visibleEnd + 2;
 	if (searchEnd >= session->paragraphCount) searchEnd = session->paragraphCount - 1;
+	buildEnd = searchEnd;
 
 	for (i = searchStart; i <= searchEnd && i < session->paragraphCount; i++) {
 		if (session->paragraphs[i].state == PARAGRAPH_PENDING) {
@@ -945,18 +1412,122 @@ SelectNextTranslationSlice(TranslationSlice* slice)
 		}
 	}
 	if (start < 0) {
+		for (i = searchEnd + 1; i < session->paragraphCount; i++) {
+			if (session->paragraphs[i].state == PARAGRAPH_PENDING) {
+				start = i;
+				buildEnd = session->paragraphCount - 1;
+				break;
+			}
+		}
+	}
+	if (start < 0) {
+		for (i = 0; i < searchStart; i++) {
+			if (session->paragraphs[i].state == PARAGRAPH_PENDING) {
+				start = i;
+				buildEnd = searchStart - 1;
+				break;
+			}
+		}
+	}
+	if (start < 0) {
+		LeaveCriticalSection(&g_sessionLock);
+		return FALSE;
+	}
+
+	charLimit = session->hasTranslatedContent ? LLM_SLICE_CHARS : LLM_INITIAL_SLICE_CHARS;
+	paragraphLimit = session->hasTranslatedContent ? LLM_SLICE_PARAGRAPHS : LLM_INITIAL_SLICE_PARAGRAPHS;
+	if (session->paragraphs[start].failCount > 0) {
+		charLimit = LLM_INITIAL_SLICE_CHARS;
+		paragraphLimit = 1;
+	}
+
+	for (i = start; i <= buildEnd && i < session->paragraphCount; i++) {
+		size_t paragraphLen;
+		if (session->paragraphs[i].state != PARAGRAPH_PENDING) {
+			if (i == start) {
+				continue;
+			}
+			break;
+		}
+		if (paragraphCount >= paragraphLimit && paragraphCount > 0) {
+			break;
+		}
+
+		paragraphLen = session->paragraphs[i].originalLen;
+		if (paragraphLen > LLM_SINGLE_PARAGRAPH_HARD_LIMIT) {
+			if (paragraphCount > 0) {
+				break;
+			}
+			segmentCount += CountOversizeSegments(session->paragraphs[i].original, paragraphLen);
+			totalChars = paragraphLen;
+			paragraphCount = 1;
+			end = i;
+			break;
+		}
+		if (paragraphCount > 0 && totalChars + paragraphLen > charLimit) {
+			break;
+		}
+		if (paragraphCount == 0 || paragraphLen <= charLimit || session->paragraphs[i].failCount == 0) {
+			totalChars += paragraphLen;
+			paragraphCount++;
+			segmentCount++;
+			end = i;
+		}
+		if (paragraphCount == 1 && paragraphLen > charLimit) {
+			break;
+		}
+	}
+
+	if (end < start || segmentCount == 0) {
 		LeaveCriticalSection(&g_sessionLock);
 		return FALSE;
 	}
 
 	slice->generation = session->generation;
 	slice->startParagraph = start;
-	slice->endParagraph = start;
-	if (!ComposeSliceMarkdown(session, start, start, &slice->markdown)) {
+	slice->endParagraph = end;
+	slice->segmentCount = (int)segmentCount;
+	slice->segments = (TranslationSegment*)calloc(segmentCount, sizeof(TranslationSegment));
+	if (slice->segments == NULL) {
 		LeaveCriticalSection(&g_sessionLock);
 		return FALSE;
 	}
-	session->paragraphs[start].state = PARAGRAPH_INFLIGHT;
+	{
+		int segmentIndex = 0;
+		for (i = start; i <= end; i++) {
+			size_t paragraphLen = session->paragraphs[i].originalLen;
+			if (paragraphLen > LLM_SINGLE_PARAGRAPH_HARD_LIMIT) {
+				size_t startOffset = 0;
+				int chunkIndex = 0;
+				while (startOffset < paragraphLen && segmentIndex < (int)segmentCount) {
+					size_t splitPoint = FindSplitPoint(session->paragraphs[i].original, startOffset, paragraphLen, LLM_OVERSIZE_SPLIT_TARGET, LLM_OVERSIZE_SPLIT_MAX);
+					if (splitPoint <= startOffset) {
+						splitPoint = paragraphLen;
+					}
+					slice->segments[segmentIndex].paragraphIndex = i;
+					sprintf_s(slice->segments[segmentIndex].marker, sizeof(slice->segments[segmentIndex].marker), "<<<P%05d_S%03d>>>", i, chunkIndex);
+					startOffset = splitPoint;
+					segmentIndex++;
+					chunkIndex++;
+				}
+			}
+			else {
+				slice->segments[segmentIndex].paragraphIndex = i;
+				sprintf_s(slice->segments[segmentIndex].marker, sizeof(slice->segments[segmentIndex].marker), "<<<P%05d>>>", i);
+				segmentIndex++;
+			}
+		}
+	}
+	if (!BuildSegmentedSliceMarkdown(session, start, end, slice->segments, slice->segmentCount, &slice->markdown)) {
+		free(slice->segments);
+		slice->segments = NULL;
+		slice->segmentCount = 0;
+		LeaveCriticalSection(&g_sessionLock);
+		return FALSE;
+	}
+	for (i = start; i <= end; i++) {
+		session->paragraphs[i].state = PARAGRAPH_INFLIGHT;
+	}
 	LeaveCriticalSection(&g_sessionLock);
 	return TRUE;
 }
@@ -965,6 +1536,7 @@ static void
 FreeTranslationSlice(TranslationSlice* slice)
 {
 	if (slice->markdown != NULL) free(slice->markdown);
+	if (slice->segments != NULL) free(slice->segments);
 	memset(slice, 0, sizeof(*slice));
 }
 
@@ -979,14 +1551,23 @@ TranslateThreadProc(LPVOID lpParam)
 			TranslationSlice slice;
 			char* translated = NULL;
 			BOOL skipped = FALSE;
+			BOOL applied = FALSE;
 			if (!SelectNextTranslationSlice(&slice)) break;
 			if (LlmTranslate_MaybeTranslateMarkdown(&g_llmConfig, slice.markdown, &translated, &skipped)) {
 				EnterCriticalSection(&g_sessionLock);
 				if (g_session != NULL && g_session->generation == slice.generation) {
-					ApplySliceTranslation(g_session, slice.startParagraph, slice.endParagraph, translated, skipped);
+					applied = ApplySliceTranslation(g_session, &slice, translated, skipped);
 				}
 				LeaveCriticalSection(&g_sessionLock);
-				QueueRender();
+				if (applied) {
+					QueueRender();
+					TryAutoSaveCompletedTranslation(slice.generation);
+				}
+				else {
+					if (translated != NULL) free(translated);
+					FreeTranslationSlice(&slice);
+					break;
+				}
 			}
 			else {
 				int i;
@@ -1029,25 +1610,268 @@ FileOpenDialog()
 	}
 }
 
+static BOOL
+BuildLanguageTagSuffix(const char* targetLangUtf8, WCHAR* buffer, size_t bufferCount)
+{
+	WCHAR* targetLang;
+	size_t i;
+	size_t out = 0;
+	int subtagIndex = 0;
+	size_t subtagLen = 0;
+
+	if (buffer == NULL || bufferCount == 0) {
+		return FALSE;
+	}
+	buffer[0] = L'\0';
+
+	if (targetLangUtf8 == NULL || targetLangUtf8[0] == '\0') {
+		return FALSE;
+	}
+
+	targetLang = ViewerCommon_ToWide(targetLangUtf8);
+	if (targetLang == NULL) {
+		return FALSE;
+	}
+
+	for (i = 0; targetLang[i] != L'\0' && out + 1 < bufferCount; i++) {
+		WCHAR ch = targetLang[i];
+		if (ch == L'_' || ch == L' ') {
+			ch = L'-';
+		}
+
+		if ((ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z')) {
+			if (subtagIndex == 0) {
+				buffer[out++] = (WCHAR)towlower(ch);
+			}
+			else if (subtagLen == 0 && targetLang[i + 1] != L'\0') {
+				if (targetLang[i + 1] == L'-' || targetLang[i + 1] == L'_' || targetLang[i + 1] == L' ') {
+					buffer[out++] = (WCHAR)towupper(ch);
+				}
+				else {
+					buffer[out++] = (WCHAR)towlower(ch);
+				}
+			}
+			else if (subtagIndex == 1 && subtagLen < 2) {
+				buffer[out++] = (WCHAR)towupper(ch);
+			}
+			else {
+				buffer[out++] = (WCHAR)towlower(ch);
+			}
+			subtagLen++;
+		}
+		else if (ch >= L'0' && ch <= L'9') {
+			buffer[out++] = ch;
+			subtagLen++;
+		}
+		else if (ch == L'-') {
+			if (out == 0 || buffer[out - 1] == L'-') {
+				continue;
+			}
+			buffer[out++] = L'-';
+			subtagIndex++;
+			subtagLen = 0;
+		}
+	}
+
+	free(targetLang);
+	while (out > 0 && buffer[out - 1] == L'-') {
+		out--;
+	}
+	buffer[out] = L'\0';
+	return out > 0;
+}
+
+static BOOL
+GetDefaultSavePath(WCHAR* buffer, size_t bufferCount)
+{
+	WCHAR drive[_MAX_DRIVE];
+	WCHAR dir[_MAX_DIR];
+	WCHAR name[_MAX_FNAME];
+	WCHAR ext[_MAX_EXT];
+	WCHAR langSuffix[96];
+
+	if (buffer == NULL || bufferCount == 0 || szCurrentFile[0] == L'\0') {
+		return FALSE;
+	}
+
+	_wsplitpath_s(szCurrentFile, drive, _countof(drive), dir, _countof(dir), name, _countof(name), ext, _countof(ext));
+	if (name[0] == L'\0') {
+		return FALSE;
+	}
+
+	if (!BuildLanguageTagSuffix(g_llmConfig.targetLang, langSuffix, _countof(langSuffix))) {
+		wcscpy_s(langSuffix, _countof(langSuffix), L"translated");
+	}
+
+	_snwprintf_s(buffer, bufferCount, _TRUNCATE, L"%s%s%s_%s%s", drive, dir, name, langSuffix, ext[0] != L'\0' ? ext : L".md");
+	return TRUE;
+}
+
+static BOOL
+PromptSavePath(WCHAR* pathBuffer, DWORD pathBufferCount)
+{
+	OPENFILENAME ofn;
+	WCHAR defaultPath[PATH_BUFFER_SIZE];
+
+	if (pathBuffer == NULL || pathBufferCount == 0) {
+		return FALSE;
+	}
+
+	pathBuffer[0] = L'\0';
+	defaultPath[0] = L'\0';
+	if (!GetDefaultSavePath(defaultPath, _countof(defaultPath))) {
+		return FALSE;
+	}
+
+	wcsncpy_s(pathBuffer, pathBufferCount, defaultPath, _TRUNCATE);
+	ZeroMemory(&ofn, sizeof(ofn));
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = hMainWindow;
+	ofn.lpstrFile = pathBuffer;
+	ofn.nMaxFile = pathBufferCount;
+	ofn.lpstrFilter = L"Markdown\0*.md\0All Files\0*.*\0";
+	ofn.nFilterIndex = 1;
+	ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+	ofn.lpstrDefExt = L"md";
+	return GetSaveFileNameW(&ofn) == TRUE;
+}
+
+static BOOL
+WriteUtf8TextFile(const WCHAR* filePath, const char* textUtf8)
+{
+	HANDLE hFile;
+	DWORD bytesWritten = 0;
+	DWORD textLen;
+
+	if (filePath == NULL || filePath[0] == L'\0' || textUtf8 == NULL) {
+		return FALSE;
+	}
+
+	hFile = CreateFileW(filePath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFile == INVALID_HANDLE_VALUE) {
+		return FALSE;
+	}
+
+	textLen = (DWORD)strlen(textUtf8);
+	if (textLen > 0 && !WriteFile(hFile, textUtf8, textLen, &bytesWritten, NULL)) {
+		CloseHandle(hFile);
+		return FALSE;
+	}
+	CloseHandle(hFile);
+	return bytesWritten == textLen;
+}
+
+static BOOL
+SaveCurrentSessionToPath(const WCHAR* filePath)
+{
+	char* markdown = NULL;
+	BOOL success = FALSE;
+
+	EnterCriticalSection(&g_sessionLock);
+	if (g_session != NULL) {
+		success = ComposeDisplayMarkdown(g_session, &markdown);
+	}
+	LeaveCriticalSection(&g_sessionLock);
+
+	if (!success || markdown == NULL) {
+		if (markdown != NULL) {
+			free(markdown);
+		}
+		return FALSE;
+	}
+
+	success = WriteUtf8TextFile(filePath, markdown);
+	free(markdown);
+	return success;
+}
+
+static BOOL
+HandleSaveTranslatedCommand(void)
+{
+	WCHAR savePath[PATH_BUFFER_SIZE];
+	DWORD generation = 0;
+	int percent = 0;
+	BOOL translationEnabled = FALSE;
+	BOOL translationComplete = FALSE;
+	int action;
+
+	savePath[0] = L'\0';
+
+	EnterCriticalSection(&g_sessionLock);
+	if (g_session == NULL) {
+		LeaveCriticalSection(&g_sessionLock);
+		MessageBoxResource(hMainWindow, IDS_MSG_NO_DOCUMENT, MB_ICONINFORMATION | MB_OK);
+		return FALSE;
+	}
+	generation = g_session->generation;
+	translationEnabled = g_session->translationEnabled;
+	translationComplete = IsSessionTranslationComplete(g_session);
+	percent = GetSessionTranslationPercent(g_session);
+	LeaveCriticalSection(&g_sessionLock);
+
+	if (!translationEnabled || translationComplete) {
+		if (!PromptSavePath(savePath, _countof(savePath))) {
+			return FALSE;
+		}
+		if (!SaveCurrentSessionToPath(savePath)) {
+			MessageBoxResource(hMainWindow, IDS_MSG_SAVE_FAILED, MB_ICONERROR | MB_OK);
+			return FALSE;
+		}
+		SetStatusBarTextResource(IDS_STATUS_TRANSLATED_SAVED);
+		return TRUE;
+	}
+
+	{
+		action = ShowPartialSaveDialog(percent);
+	}
+
+	if (action == IDCANCEL || action == IDNO) {
+		return FALSE;
+	}
+
+	if (!PromptSavePath(savePath, _countof(savePath))) {
+		return FALSE;
+	}
+
+	if (action == IDOK || action == IDYES) {
+		if (!SaveCurrentSessionToPath(savePath)) {
+			MessageBoxResource(hMainWindow, IDS_MSG_SAVE_FAILED, MB_ICONERROR | MB_OK);
+			return FALSE;
+		}
+		SetStatusBarTextResource(IDS_STATUS_PARTIAL_SAVED);
+		return TRUE;
+	}
+
+	StartDeferredSave(savePath, generation);
+	if (TryAutoSaveCompletedTranslation(generation)) {
+		return TRUE;
+	}
+	SetStatusBarTextResource(IDS_STATUS_DEFERRED_SAVE);
+	QueueTranslation();
+	return TRUE;
+}
+
 BOOL
 CreateToolBar()
 {
 	int iDpi = GetDpiForWindow(hMainWindow);
 	const int ImageListID = 0;
-	const int numButtons = 4;
+	const int numButtons = 5;
 	int bitmapSize = (iDpi / 3) - 16;
 	const DWORD buttonStyles = BTNS_AUTOSIZE;
 	HIMAGELIST hImageList = NULL;
 	HWND hWndToolbar;
 	HICON hOpenLarge;
 	HICON hRefreshLarge;
+	HICON hSaveLarge = NULL;
 	HICON hTranslateIcon;
 	HICON hCloseIcon;
 	int iOpenIndex;
 	int iRefreshIndex;
+	int iSaveIndex;
 	int iTranslateIndex;
 	int iCloseIndex;
-	TBBUTTON tbButtons[7];
+	TBBUTTON tbButtons[9];
 
 	if (bitmapSize < 16) bitmapSize = 16;
 	hWndToolbar = CreateWindowEx(0, TOOLBARCLASSNAME, NULL, WS_CHILD | TBSTYLE_WRAPABLE, 0, 0, 0, 0, hMainWindow, NULL, hInst, NULL);
@@ -1062,16 +1886,28 @@ CreateToolBar()
 
 	ExtractIconEx(L"shell32.dll", 4, &hOpenLarge, NULL, 1);
 	ExtractIconEx(L"shell32.dll", 238, &hRefreshLarge, NULL, 1);
+	{
+		SHSTOCKICONINFO stockIconInfo;
+		ZeroMemory(&stockIconInfo, sizeof(stockIconInfo));
+		stockIconInfo.cbSize = sizeof(stockIconInfo);
+		if (SUCCEEDED(SHGetStockIconInfo(SIID_DRIVE35, SHGSI_ICON | SHGSI_LARGEICON, &stockIconInfo))) {
+			hSaveLarge = stockIconInfo.hIcon;
+		}
+	}
 	hTranslateIcon = (HICON)LoadImage(NULL, IDI_INFORMATION, IMAGE_ICON, bitmapSize, bitmapSize, LR_SHARED);
 	hCloseIcon = (HICON)LoadImage(NULL, IDI_ERROR, IMAGE_ICON, bitmapSize, bitmapSize, LR_SHARED);
 
 	iOpenIndex = ImageList_AddIcon(hImageList, hOpenLarge);
 	iRefreshIndex = ImageList_AddIcon(hImageList, hRefreshLarge);
+	iSaveIndex = ImageList_AddIcon(hImageList, hSaveLarge);
 	iTranslateIndex = ImageList_AddIcon(hImageList, hTranslateIcon);
 	iCloseIndex = ImageList_AddIcon(hImageList, hCloseIcon);
 
 	DestroyIcon(hOpenLarge);
 	DestroyIcon(hRefreshLarge);
+	if (hSaveLarge != NULL) {
+		DestroyIcon(hSaveLarge);
+	}
 	SendMessage(hWndToolbar, TB_BUTTONSTRUCTSIZE, (WPARAM)sizeof(TBBUTTON), 0);
 	ZeroMemory(tbButtons, sizeof(tbButtons));
 	tbButtons[0].iBitmap = iOpenIndex;
@@ -1080,22 +1916,28 @@ CreateToolBar()
 	tbButtons[0].fsStyle = (BYTE)buttonStyles;
 	tbButtons[1].fsState = TBSTATE_ENABLED;
 	tbButtons[1].fsStyle = BTNS_SEP;
-	tbButtons[2].iBitmap = iRefreshIndex;
-	tbButtons[2].idCommand = IDM_FILE_REFRESH;
+	tbButtons[2].iBitmap = iSaveIndex;
+	tbButtons[2].idCommand = IDM_FILE_SAVE_TRANSLATED;
 	tbButtons[2].fsState = TBSTATE_ENABLED;
 	tbButtons[2].fsStyle = (BYTE)buttonStyles;
 	tbButtons[3].fsState = TBSTATE_ENABLED;
 	tbButtons[3].fsStyle = BTNS_SEP;
-	tbButtons[4].iBitmap = iTranslateIndex;
-	tbButtons[4].idCommand = IDM_VIEW_TRANSLATE;
-	tbButtons[4].fsState = TBSTATE_ENABLED | TBSTATE_CHECKED;
-	tbButtons[4].fsStyle = BTNS_CHECK | (BYTE)buttonStyles;
+	tbButtons[4].iBitmap = iRefreshIndex;
+	tbButtons[4].idCommand = IDM_FILE_REFRESH;
+	tbButtons[4].fsState = TBSTATE_ENABLED;
+	tbButtons[4].fsStyle = (BYTE)buttonStyles;
 	tbButtons[5].fsState = TBSTATE_ENABLED;
 	tbButtons[5].fsStyle = BTNS_SEP;
-	tbButtons[6].iBitmap = iCloseIndex;
-	tbButtons[6].idCommand = IDM_FILE_EXIT;
-	tbButtons[6].fsState = TBSTATE_ENABLED;
-	tbButtons[6].fsStyle = (BYTE)buttonStyles;
+	tbButtons[6].iBitmap = iTranslateIndex;
+	tbButtons[6].idCommand = IDM_VIEW_TRANSLATE;
+	tbButtons[6].fsState = TBSTATE_ENABLED | TBSTATE_CHECKED;
+	tbButtons[6].fsStyle = BTNS_CHECK | (BYTE)buttonStyles;
+	tbButtons[7].fsState = TBSTATE_ENABLED;
+	tbButtons[7].fsStyle = BTNS_SEP;
+	tbButtons[8].iBitmap = iCloseIndex;
+	tbButtons[8].idCommand = IDM_FILE_EXIT;
+	tbButtons[8].fsState = TBSTATE_ENABLED;
+	tbButtons[8].fsStyle = (BYTE)buttonStyles;
 	SendMessage(hWndToolbar, TB_ADDBUTTONS, (WPARAM)_countof(tbButtons), (LPARAM)&tbButtons);
 	SendMessage(hWndToolbar, TB_AUTOSIZE, 0, 0);
 	SendMessage(hWndToolbar, TB_SETBUTTONSIZE, 0, MAKELPARAM(bitmapSize + MulDiv(12, iDpi, 96), bitmapSize + MulDiv(12, iDpi, 96)));

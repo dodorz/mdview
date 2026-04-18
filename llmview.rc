@@ -1,28 +1,29 @@
 // Microsoft Visual C++ generated resource script.
+#pragma code_page(65001)
 #include "Resource.h"
-
-#define IDM_VIEW_TRANSLATE 40024
 
 #define APSTUDIO_READONLY_SYMBOLS
 #include "winres.h"
 #undef APSTUDIO_READONLY_SYMBOLS
 
 #if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ENU)
-LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
 IDI_APP ICON "Icon.ico"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
 IDR_MENU_BAR MENU
 BEGIN
     POPUP "&File"
     BEGIN
         MENUITEM "&Open\tO",               IDM_FILE_OPEN
+        MENUITEM "&Save Translated...\tS", IDM_FILE_SAVE_TRANSLATED
         MENUITEM "&Refresh\tR",            IDM_FILE_REFRESH
         MENUITEM "LLM &Translate\tT",      IDM_VIEW_TRANSLATE, CHECKED
         MENUITEM SEPARATOR
         MENUITEM "&Close\tQ",              IDM_FILE_EXIT
     END
-    POPUP "Help"
+    POPUP "&Help"
     BEGIN
         MENUITEM "About",                  IDM_HELP_ABOUT
     END
@@ -32,9 +33,118 @@ IDR_ACCELERATOR ACCELERATORS
 BEGIN
     "O", IDM_FILE_OPEN, VIRTKEY, NOINVERT
     "R", IDM_FILE_REFRESH, VIRTKEY, NOINVERT
+    "S", IDM_FILE_SAVE_TRANSLATED, VIRTKEY, NOINVERT
     "T", IDM_VIEW_TRANSLATE, VIRTKEY, NOINVERT
     "Q", IDM_FILE_EXIT, VIRTKEY, NOINVERT
 END
+
+IDD_ABOUTBOX DIALOGEX 0, 0, 270, 114
+STYLE DS_SYSMODAL | DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About llmview"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    DEFPUSHBUTTON   "OK",IDOK,210,120,50,14
+    LTEXT           "By dodo, 2026. Forked from mdview with LLM translation.",IDC_STATIC,50,16,188,16
+    LTEXT           "Version 1.0.0.0",IDC_STATIC,50,38,188,16
+    LTEXT           "Uses llmview.ini next to the executable for provider settings.",IDC_STATIC,50,60,220,16
+    ICON            IDI_APP,IDC_STATIC,16,16,49,49
+END
+
+STRINGTABLE
+BEGIN
+    IDS_APP                         "llmview"
+    IDS_MENU_FILE_EXIT              "Close Application"
+    IDS_MENU_HELP_ABOUT             "Application Information"
+    IDS_STATUS_OPEN_FILE            "Open a new file"
+    IDS_STATUS_SAVE_TRANSLATED      "Save translated Markdown"
+    IDS_STATUS_TOGGLE_TRANSLATE     "Toggle LLM translation"
+    IDS_STATUS_TRANSLATING_REST     "Translated visible text shown. Remaining paragraphs are translating..."
+    IDS_STATUS_PREVIEW_TRANSLATING  "Preview loaded. Translating visible text in background..."
+    IDS_STATUS_DOCUMENT_LOADED      "Document loaded."
+    IDS_STATUS_AUTOSAVED            "Translated file saved automatically after full translation."
+    IDS_STATUS_TRANSLATED_SAVED     "Translated file saved."
+    IDS_STATUS_PARTIAL_SAVED        "Partially translated file saved."
+    IDS_STATUS_DEFERRED_SAVE        "Full translation will continue in background and save automatically."
+    IDS_STATUS_PREVIEW_RENDERING    "Preview loaded, rendering full document..."
+    IDS_MSG_AUTOSAVE_FAILED         "Failed to save the translated file automatically."
+    IDS_MSG_NO_DOCUMENT             "No document is currently open."
+    IDS_MSG_SAVE_FAILED             "Failed to save the translated file."
+    IDS_MSG_WINDOW_REG_FAILED       "Window Registration Failed!"
+    IDS_MSG_WINDOW_CREATE_FAILED    "Window Creation Failed!"
+    IDS_DIALOG_PARTIAL_MAIN         "Save translated file"
+    IDS_DIALOG_PARTIAL_CONTENT      "Current document is about %d%% translated.\n\nOK saves the current result now.\nCancel aborts saving.\nSave Later lets you choose the path now and automatically save after translation finishes."
+    IDS_DIALOG_PARTIAL_FALLBACK     "Current document is only partially translated.\n\nYes saves the current result now.\nNo cancels saving.\nCancel chooses a path now and saves automatically after translation finishes."
+    IDS_BTN_SAVE_LATER              "Save Later"
+END
+
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
+
+IDR_MENU_BAR MENU
+BEGIN
+    POPUP "文件(&F)"
+    BEGIN
+        MENUITEM "打开(&O)\tO",            IDM_FILE_OPEN
+        MENUITEM "保存翻译结果(&S)\tS",    IDM_FILE_SAVE_TRANSLATED
+        MENUITEM "刷新(&R)\tR",            IDM_FILE_REFRESH
+        MENUITEM "LLM 翻译(&T)\tT",        IDM_VIEW_TRANSLATE, CHECKED
+        MENUITEM SEPARATOR
+        MENUITEM "关闭(&Q)\tQ",            IDM_FILE_EXIT
+    END
+    POPUP "帮助(&H)"
+    BEGIN
+        MENUITEM "关于",                   IDM_HELP_ABOUT
+    END
+END
+
+IDR_ACCELERATOR ACCELERATORS
+BEGIN
+    "O", IDM_FILE_OPEN, VIRTKEY, NOINVERT
+    "R", IDM_FILE_REFRESH, VIRTKEY, NOINVERT
+    "S", IDM_FILE_SAVE_TRANSLATED, VIRTKEY, NOINVERT
+    "T", IDM_VIEW_TRANSLATE, VIRTKEY, NOINVERT
+    "Q", IDM_FILE_EXIT, VIRTKEY, NOINVERT
+END
+
+IDD_ABOUTBOX DIALOGEX 0, 0, 270, 114
+STYLE DS_SYSMODAL | DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "关于 llmview"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    DEFPUSHBUTTON   "确定",IDOK,210,120,50,14
+    LTEXT           "dodo 制作，2026。基于 mdview 扩展，加入 LLM 翻译。",IDC_STATIC,50,16,188,16
+    LTEXT           "版本 1.0.0.0",IDC_STATIC,50,38,188,16
+    LTEXT           "LLM 提供方配置来自可执行文件同目录下的 llmview.ini。",IDC_STATIC,50,60,220,16
+    ICON            IDI_APP,IDC_STATIC,16,16,49,49
+END
+
+STRINGTABLE
+BEGIN
+    IDS_APP                         "llmview"
+    IDS_MENU_FILE_EXIT              "关闭程序"
+    IDS_MENU_HELP_ABOUT             "程序信息"
+    IDS_STATUS_OPEN_FILE            "打开新文件"
+    IDS_STATUS_SAVE_TRANSLATED      "保存翻译后的 Markdown"
+    IDS_STATUS_TOGGLE_TRANSLATE     "切换 LLM 翻译开关"
+    IDS_STATUS_TRANSLATING_REST     "已显示可见区域翻译，剩余段落仍在后台翻译..."
+    IDS_STATUS_PREVIEW_TRANSLATING  "预览已加载，正在后台翻译可见内容..."
+    IDS_STATUS_DOCUMENT_LOADED      "文档已加载。"
+    IDS_STATUS_AUTOSAVED            "文档完全翻译后已自动保存。"
+    IDS_STATUS_TRANSLATED_SAVED     "翻译文件已保存。"
+    IDS_STATUS_PARTIAL_SAVED        "部分翻译结果已保存。"
+    IDS_STATUS_DEFERRED_SAVE        "后台将继续翻译，完成后会自动保存。"
+    IDS_STATUS_PREVIEW_RENDERING    "预览已加载，正在渲染完整文档..."
+    IDS_MSG_AUTOSAVE_FAILED         "自动保存翻译文件失败。"
+    IDS_MSG_NO_DOCUMENT             "当前没有打开的文档。"
+    IDS_MSG_SAVE_FAILED             "保存翻译文件失败。"
+    IDS_MSG_WINDOW_REG_FAILED       "窗口注册失败！"
+    IDS_MSG_WINDOW_CREATE_FAILED    "窗口创建失败！"
+    IDS_DIALOG_PARTIAL_MAIN         "保存翻译文件"
+    IDS_DIALOG_PARTIAL_CONTENT      "当前文档大约已翻译 %d%%。\n\nOK 立即保存当前结果。\nCancel 取消保存。\n稍后保存 现在先选择路径，待后台翻译完成后自动保存。"
+    IDS_DIALOG_PARTIAL_FALLBACK     "当前文档尚未完全翻译。\n\nYes 立即保存当前结果。\nNo 取消保存。\nCancel 现在先选择路径，待后台翻译完成后自动保存。"
+    IDS_BTN_SAVE_LATER              "稍后保存"
+END
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION 1,0,0,1
@@ -66,25 +176,6 @@ BEGIN
     BEGIN
         VALUE "Translation", 0x409, 1200
     END
-END
-
-IDD_ABOUTBOX DIALOGEX 0, 0, 270, 114
-STYLE DS_SYSMODAL | DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "About llmview"
-FONT 8, "MS Shell Dlg", 400, 0, 0x1
-BEGIN
-    DEFPUSHBUTTON   "OK",IDOK,210,120,50,14
-    LTEXT           "By dodo, 2026. Forked from mdview with LLM translation.",IDC_STATIC,50,16,188,16
-    LTEXT           "Version 1.0.0.0",IDC_STATIC,50,38,188,16
-    LTEXT           "Uses llmview.ini next to the executable for provider settings.",IDC_STATIC,50,60,220,16
-    ICON            IDI_APP,IDC_STATIC,16,16,49,49
-END
-
-STRINGTABLE
-BEGIN
-    IDS_APP                 "llmview"
-    IDS_MENU_FILE_EXIT      "Close Application"
-    IDS_MENU_HELP_ABOUT     "Application Information"
 END
 
 #endif
