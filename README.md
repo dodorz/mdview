@@ -9,7 +9,7 @@ This repository currently contains two desktop executables:
 
 Both applications are native Win32 programs written in C/C++ and are intended to be portable: build them once, then run the executables directly without an installer.
 
-![Screenshot](/C:/~/Projects/mdview/Screenshot.jpg)
+![Screenshot](Screenshot.jpg)
 
 ## Features
 
@@ -31,12 +31,12 @@ Both applications are native Win32 programs written in C/C++ and are intended to
 
 ## Repository Layout
 
-- [main.c](/C:/~/Projects/mdview/main.c): entry point for `mdview`
-- [llmview_main.c](/C:/~/Projects/mdview/llmview_main.c): entry point for `llmview`
-- [llm_translate.c](/C:/~/Projects/mdview/llm_translate.c): LLM configuration loading and HTTP translation client
-- [viewer_common.c](/C:/~/Projects/mdview/viewer_common.c): shared helpers for file loading, window state, and string conversion
-- [MarkDown2RichText.c](/C:/~/Projects/mdview/MarkDown2RichText.c): Markdown-to-RTF conversion
-- [build.bat](/C:/~/Projects/mdview/build.bat): build helper for Visual Studio Build Tools / MSBuild
+- [main.c](main.c): entry point for `mdview`
+- [llmview_main.c](llmview_main.c): entry point for `llmview`
+- [llm_translate.c](llm_translate.c): LLM configuration loading and HTTP translation client
+- [viewer_common.c](viewer_common.c): shared helpers for file loading, window state, and string conversion
+- [MarkDown2RichText.c](MarkDown2RichText.c): Markdown-to-RTF conversion
+- [build.bat](build.bat): build helper for Visual Studio Build Tools / MSBuild
 
 ## Build
 
@@ -87,7 +87,7 @@ Both programs can also open a file passed on the command line.
 
 There is now an example config in:
 
-- [llmview.ini.example](/C:/~/Projects/mdview/llmview.ini.example)
+- [llmview.ini.example](llmview.ini.example)
 
 Minimum required sections and keys:
 
@@ -146,4 +146,4 @@ When translation is incomplete, the app shows the approximate translated percent
 
 Chinese documentation is available in:
 
-- [README_zh-CN.md](/C:/~/Projects/mdview/README_zh-CN.md)
+- [README_zh-CN.md](README_zh-CN.md)

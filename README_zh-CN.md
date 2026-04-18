@@ -9,7 +9,7 @@
 
 两者都是基于 Win32 的原生 C/C++ 程序，偏向绿色便携使用方式：编译完成后可直接运行，不依赖安装器。
 
-![截图](/C:/~/Projects/mdview/Screenshot.jpg)
+![截图](Screenshot.jpg)
 
 ## 功能概览
 
@@ -31,12 +31,12 @@
 
 ## 仓库结构
 
-- [main.c](/C:/~/Projects/mdview/main.c)：`mdview` 入口
-- [llmview_main.c](/C:/~/Projects/mdview/llmview_main.c)：`llmview` 入口
-- [llm_translate.c](/C:/~/Projects/mdview/llm_translate.c)：LLM 配置加载与 HTTP 翻译请求
-- [viewer_common.c](/C:/~/Projects/mdview/viewer_common.c)：文件加载、窗口状态、字符串转换等公共逻辑
-- [MarkDown2RichText.c](/C:/~/Projects/mdview/MarkDown2RichText.c)：Markdown 转 RTF
-- [build.bat](/C:/~/Projects/mdview/build.bat)：Visual Studio Build Tools / MSBuild 构建脚本
+- [main.c](main.c)：`mdview` 入口
+- [llmview_main.c](llmview_main.c)：`llmview` 入口
+- [llm_translate.c](llm_translate.c)：LLM 配置加载与 HTTP 翻译请求
+- [viewer_common.c](viewer_common.c)：文件加载、窗口状态、字符串转换等公共逻辑
+- [MarkDown2RichText.c](MarkDown2RichText.c)：Markdown 转 RTF
+- [build.bat](build.bat)：Visual Studio Build Tools / MSBuild 构建脚本
 
 ## 编译
 
@@ -87,7 +87,7 @@ build.bat Release Win32
 
 仓库中现在提供了一份示例配置：
 
-- [llmview.ini.example](/C:/~/Projects/mdview/llmview.ini.example)
+- [llmview.ini.example](llmview.ini.example)
 
 至少需要以下配置项：
 
@@ -146,4 +146,4 @@ model=gpt-4.1-mini
 
 英文说明见：
 
-- [README.md](/C:/~/Projects/mdview/README.md)
+- [README.md](README.md)
