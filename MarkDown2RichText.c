@@ -7,7 +7,9 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <shlwapi.h>
+#include <winhttp.h>
 #pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "winhttp.lib")
 #endif
 
 static __declspec(thread) char* path;
@@ -56,6 +58,10 @@ get_line(char** input)
 static __declspec(thread) char* rtf;
 static __declspec(thread) size_t buffer_size;
 static __declspec(thread) size_t buffer_len;
+const static char* hex_digits = "0123456789ABCDEF";
+
+static int
+get_image_format(const char* file_name);
 
 static void
 append_buffer(const char* str)
@@ -77,6 +83,137 @@ append_buffer(const char* str)
 	buffer_len += length;
 	rtf[buffer_len] = '\0';
 }
+
+static void
+append_hex_bytes(const unsigned char* data, size_t length)
+{
+	char hex[3] = "00";
+	size_t i;
+
+	for (i = 0; i < length; ++i) {
+		hex[0] = hex_digits[data[i] >> 4 & 0xF];
+		hex[1] = hex_digits[data[i] & 0xF];
+		append_buffer(hex);
+	}
+}
+
+static int
+is_http_url(const char* value)
+{
+	if (value == NULL)
+		return 0;
+	return _strnicmp(value, "http://", 7) == 0 || _strnicmp(value, "https://", 8) == 0;
+}
+
+static int
+get_image_format_from_reference(const char* file_name)
+{
+	char reference[1024];
+	size_t i = 0;
+
+	if (file_name == NULL)
+		return 0;
+
+	while (file_name[i] != '\0' && file_name[i] != '?' && file_name[i] != '#' && i < sizeof(reference) - 1) {
+		reference[i] = file_name[i];
+		i++;
+	}
+	reference[i] = '\0';
+	return get_image_format(reference);
+}
+
+#ifdef _WIN32
+static BOOL
+download_url_bytes(const char* url, unsigned char** data_out, size_t* length_out)
+{
+	BOOL success = FALSE;
+	WCHAR url_w[2048];
+	URL_COMPONENTS components;
+	HINTERNET hSession = NULL;
+	HINTERNET hConnect = NULL;
+	HINTERNET hRequest = NULL;
+	WCHAR host_name[256];
+	WCHAR url_path[2048];
+	DWORD flags = 0;
+	unsigned char* buffer = NULL;
+	size_t length = 0;
+
+	*data_out = NULL;
+	*length_out = 0;
+
+	if (MultiByteToWideChar(CP_UTF8, 0, url, -1, url_w, (int)(sizeof(url_w) / sizeof(url_w[0]))) == 0)
+		return FALSE;
+
+	ZeroMemory(&components, sizeof(components));
+	components.dwStructSize = sizeof(components);
+	components.lpszHostName = host_name;
+	components.dwHostNameLength = (DWORD)(sizeof(host_name) / sizeof(host_name[0]));
+	components.lpszUrlPath = url_path;
+	components.dwUrlPathLength = (DWORD)(sizeof(url_path) / sizeof(url_path[0]));
+	components.dwSchemeLength = (DWORD)-1;
+
+	if (!WinHttpCrackUrl(url_w, 0, 0, &components))
+		goto cleanup;
+
+	if (components.nScheme == INTERNET_SCHEME_HTTPS)
+		flags |= WINHTTP_FLAG_SECURE;
+
+	hSession = WinHttpOpen(L"mdview/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+		WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+	if (hSession == NULL)
+		goto cleanup;
+
+	hConnect = WinHttpConnect(hSession, host_name, components.nPort, 0);
+	if (hConnect == NULL)
+		goto cleanup;
+
+	hRequest = WinHttpOpenRequest(hConnect, L"GET", url_path, NULL,
+		WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+	if (hRequest == NULL)
+		goto cleanup;
+
+	if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+		WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
+		goto cleanup;
+	if (!WinHttpReceiveResponse(hRequest, NULL))
+		goto cleanup;
+
+	for (;;) {
+		DWORD available = 0;
+		unsigned char* new_buffer;
+
+		if (!WinHttpQueryDataAvailable(hRequest, &available))
+			goto cleanup;
+		if (available == 0)
+			break;
+
+		new_buffer = (unsigned char*)realloc(buffer, length + available);
+		if (new_buffer == NULL)
+			goto cleanup;
+		buffer = new_buffer;
+
+		if (!WinHttpReadData(hRequest, buffer + length, available, &available))
+			goto cleanup;
+		length += available;
+	}
+
+	*data_out = buffer;
+	*length_out = length;
+	buffer = NULL;
+	success = TRUE;
+
+cleanup:
+	if (buffer != NULL)
+		free(buffer);
+	if (hRequest != NULL)
+		WinHttpCloseHandle(hRequest);
+	if (hConnect != NULL)
+		WinHttpCloseHandle(hConnect);
+	if (hSession != NULL)
+		WinHttpCloseHandle(hSession);
+	return success;
+}
+#endif
 
 static void
 append_char(char c)
@@ -101,8 +238,6 @@ append_rtf_char(char c)
 #ifdef _WIN32
 LPWSTR toW(const char* strTextUTF8);
 #endif
-
-const static char* hex_digits = "0123456789ABCDEF";
 
 // Get image format from file extension
 // Returns: 1 for PNG, 2 for JPEG, 0 for unknown
@@ -132,37 +267,61 @@ get_image_format(const char* file_name)
 static void
 append_image(const char* file_name)
 {
-	char hex[3] = "00";
-	int img_format = get_image_format(file_name);
+	int img_format = get_image_format_from_reference(file_name);
 	if (img_format == 0)
 		return;  // Unsupported format
 	
 	FILE* file;
 #ifdef _WIN32
+	if (is_http_url(file_name))
+	{
+		unsigned char* remote_data = NULL;
+		size_t remote_length = 0;
+
+		if (!download_url_bytes(file_name, &remote_data, &remote_length) || remote_data == NULL || remote_length == 0) {
+			free(remote_data);
+			return;
+		}
+
+		append_buffer("\\par\\qc{\\pict\\");
+		if (img_format == 1)
+			append_buffer("pngblip");
+		else
+			append_buffer("jpegblip");
+		append_buffer("\\picscalex100\\picscaley100\\picscaled1 ");
+		append_hex_bytes(remote_data, remote_length);
+		append_buffer("\n}\\par\\ql\n");
+		free(remote_data);
+		return;
+	}
+
 	// Build absolute path
-	WCHAR base_path_w[MAX_PATH];
+	WCHAR base_path_w[MAX_PATH * 2];
 	WCHAR file_name_w[MAX_PATH];
 	WCHAR full_path_w[MAX_PATH * 2];
+	WCHAR canonical_path[MAX_PATH * 2];
 	
-	MultiByteToWideChar(CP_UTF8, 0, path, -1, base_path_w, MAX_PATH);
+	MultiByteToWideChar(CP_UTF8, 0, path, -1, base_path_w, MAX_PATH * 2);
 	MultiByteToWideChar(CP_UTF8, 0, file_name, -1, file_name_w, MAX_PATH);
 	
-	// Build full path: base_path + "\" + file_name
-	wcscpy_s(full_path_w, MAX_PATH * 2, base_path_w);
-	wcscat_s(full_path_w, MAX_PATH * 2, L"\\");
-	wcscat_s(full_path_w, MAX_PATH * 2, file_name_w);
+	if (PathIsRelativeW(file_name_w)) {
+		// Build full path: base_path + "\" + file_name
+		wcscpy_s(full_path_w, MAX_PATH * 2, base_path_w);
+		wcscat_s(full_path_w, MAX_PATH * 2, L"\\");
+		wcscat_s(full_path_w, MAX_PATH * 2, file_name_w);
+	}
+	else {
+		wcscpy_s(full_path_w, MAX_PATH * 2, file_name_w);
+	}
 	
 	// Canonicalize to resolve .. and .
-	WCHAR canonical_path[MAX_PATH * 2];
 	if (!PathCanonicalizeW(canonical_path, full_path_w))
 	{
-		MessageBoxW(NULL, full_path_w, L"PathCanonicalize failed", MB_OK);
 		return;
 	}
 	
 	if (_wfopen_s(&file, canonical_path, L"rb") != 0)
 	{
-		MessageBoxW(NULL, canonical_path, L"Failed to open image", MB_OK);
 		file = NULL;
 	}
 #else
@@ -183,11 +342,9 @@ append_image(const char* file_name)
 		append_buffer("jpegblip");
 	
 	append_buffer("\\picscalex100\\picscaley100\\picscaled1 ");
-
 	while ((c = getc(file)) != EOF) {
-		*hex = hex_digits[c >> 4 & 0xF];
-		*(hex + 1) = hex_digits[c & 0xF];
-		append_buffer(hex);
+		unsigned char byte = (unsigned char)c;
+		append_hex_bytes(&byte, 1);
 	}
 	append_buffer("\n}\\par\\ql\n");
 
