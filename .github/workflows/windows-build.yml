@@ -5,11 +5,17 @@ on:
     branches:
       - "**"
     tags:
-      - "v*"
+      - "*"
   pull_request:
     branches:
       - "**"
   workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Create a GitHub Release when the ref is a version tag"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -17,12 +23,100 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    outputs:
+      is_version_tag: ${{ steps.version.outputs.is_version_tag }}
+      should_release: ${{ steps.version.outputs.should_release }}
+      previous_tag: ${{ steps.version.outputs.previous_tag }}
+      normalized_version: ${{ steps.version.outputs.normalized_version }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Evaluate version tag
+        id: version
+        shell: powershell
+        run: |
+          $eventName = "${{ github.event_name }}"
+          $ref = "${{ github.ref }}"
+          $refName = "${{ github.ref_name }}"
+          $manualRelease = "${{ github.event.inputs.create_release }}"
+          $pattern = '^[vV]?(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$'
+
+          $isTagRef = $ref.StartsWith("refs/tags/")
+          $isVersionTag = $false
+          $shouldRelease = $false
+          $previousTag = ""
+          $normalizedVersion = ""
+          $releaseTag = $refName
+
+          function Normalize-Version([string]$tagValue) {
+            if ($tagValue -notmatch $pattern) {
+              return $null
+            }
+
+            return [PSCustomObject]@{
+              Tag = $tagValue
+              Major = [int]$Matches[1]
+              Minor = [int]$Matches[2]
+              Patch = [int]$Matches[3]
+              Build = if ($Matches[4]) { [int]$Matches[4] } else { -1 }
+              Normalized = "$([int]$Matches[1]).$([int]$Matches[2]).$([int]$Matches[3])"
+            }
+          }
+
+          $currentVersion = $null
+          if ($isTagRef) {
+            $currentVersion = Normalize-Version $refName
+            if ($null -ne $currentVersion) {
+              $isVersionTag = $true
+              $normalizedVersion = $currentVersion.Normalized
+              $releaseTag = $refName
+            }
+          }
+
+          if ($isVersionTag) {
+            $allVersionTags = git tag | Where-Object { $_ -match $pattern } | ForEach-Object { Normalize-Version $_ } | Where-Object { $null -ne $_ }
+
+            $sortedTags = $allVersionTags | Sort-Object Major, Minor, Patch, Build
+            $previous = $sortedTags | Where-Object {
+              $_.Tag -ne $currentVersion.Tag -and
+              (
+                $_.Major -lt $currentVersion.Major -or
+                ($_.Major -eq $currentVersion.Major -and $_.Minor -lt $currentVersion.Minor) -or
+                ($_.Major -eq $currentVersion.Major -and $_.Minor -eq $currentVersion.Minor -and $_.Patch -lt $currentVersion.Patch) -or
+                ($_.Major -eq $currentVersion.Major -and $_.Minor -eq $currentVersion.Minor -and $_.Patch -eq $currentVersion.Patch -and $_.Build -lt $currentVersion.Build)
+              )
+            } | Select-Object -Last 1
+
+            if ($null -ne $previous) {
+              $previousTag = $previous.Tag
+            }
+
+            $shouldRelease = $true
+            if ($null -ne $previous) {
+              if (
+                $previous.Major -eq $currentVersion.Major -and
+                $previous.Minor -eq $currentVersion.Minor -and
+                $previous.Patch -eq $currentVersion.Patch
+              ) {
+                $shouldRelease = $false
+              }
+            }
+
+            if ($eventName -eq "workflow_dispatch" -and $manualRelease -ne "true") {
+              $shouldRelease = $false
+            }
+          }
+
+          "is_version_tag=$($isVersionTag.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "should_release=$($shouldRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "previous_tag=$previousTag" >> $env:GITHUB_OUTPUT
+          "normalized_version=$normalizedVersion" >> $env:GITHUB_OUTPUT
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
 
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -32,7 +126,7 @@ jobs:
         run: build.bat Release x64
 
       - name: Package 7z archive
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'workflow_dispatch' || steps.version.outputs.is_version_tag == 'true'
         shell: powershell
         run: |
           $packageDir = "dist\MarkdownViewer-windows-x64"
@@ -54,7 +148,7 @@ jobs:
           }
 
       - name: Upload artifact
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'workflow_dispatch' || steps.version.outputs.is_version_tag == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: MarkdownViewer-windows-x64-7z
@@ -63,75 +157,26 @@ jobs:
 
   release:
     needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: needs.build.outputs.is_version_tag == 'true' && needs.build.outputs.should_release == 'true'
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Decide whether to publish release
-        id: version_check
-        shell: powershell
-        run: |
-          $currentTag = "${{ github.ref_name }}"
-          $versionPattern = '^[vV]?(\d+)\.(\d+)\.(\d+)\.(\d+)$'
-
-          if ($currentTag -notmatch $versionPattern) {
-            throw "Tag '$currentTag' is not in the expected format vMAJOR.MINOR.PATCH.BUILD"
-          }
-
-          $currentVersion = [PSCustomObject]@{
-            Major = [int]$Matches[1]
-            Minor = [int]$Matches[2]
-            Patch = [int]$Matches[3]
-            Build = [int]$Matches[4]
-          }
-
-          $previousTag = git tag --sort=version:refname | Where-Object {
-            $_ -match $versionPattern -and $_ -ne $currentTag
-          } | Select-Object -Last 1
-
-          $shouldRelease = $true
-
-          if ($previousTag) {
-            $null = $previousTag -match $versionPattern
-            $previousVersion = [PSCustomObject]@{
-              Major = [int]$Matches[1]
-              Minor = [int]$Matches[2]
-              Patch = [int]$Matches[3]
-              Build = [int]$Matches[4]
-            }
-
-            if (
-              $currentVersion.Major -eq $previousVersion.Major -and
-              $currentVersion.Minor -eq $previousVersion.Minor -and
-              $currentVersion.Patch -eq $previousVersion.Patch
-            ) {
-              $shouldRelease = $false
-            }
-          }
-
-          "previous_tag=$previousTag" >> $env:GITHUB_OUTPUT
-          "should_release=$($shouldRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
-
       - name: Download package artifact
-        if: steps.version_check.outputs.should_release == 'true'
         uses: actions/download-artifact@v4
         with:
           name: MarkdownViewer-windows-x64-7z
           path: dist
 
       - name: Publish GitHub Release
-        if: steps.version_check.outputs.should_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: MarkdownViewer ${{ github.ref_name }}
+          tag_name: ${{ needs.build.outputs.release_tag }}
+          name: MarkdownViewer ${{ needs.build.outputs.release_tag }}
           body: |
-            Release version: `${{ github.ref_name }}`
+            Release version: `${{ needs.build.outputs.release_tag }}`
+
+            Normalized version:
+            - `${{ needs.build.outputs.normalized_version }}`
 
             Package:
             - `MarkdownViewer-windows-x64.7z`
@@ -141,12 +186,17 @@ jobs:
             - `README.md`
             - `Screenshot.jpg`
 
-            Previous version tag: `${{ steps.version_check.outputs.previous_tag || 'none' }}`
+            Previous version tag: `${{ needs.build.outputs.previous_tag || 'none' }}`
           files: dist/MarkdownViewer-windows-x64.7z
 
-      - name: Skip release when only BUILD changed
-        if: steps.version_check.outputs.should_release != 'true'
+  skip-release-note:
+    needs: build
+    if: needs.build.outputs.is_version_tag == 'true' && needs.build.outputs.should_release != 'true'
+    runs-on: windows-latest
+
+    steps:
+      - name: Explain skipped release
         shell: powershell
         run: |
-          $previousTag = "${{ steps.version_check.outputs.previous_tag }}"
-          Write-Host "Skipping GitHub Release for ${{ github.ref_name }} because only BUILD changed compared with '$previousTag'."
+          $previousTag = "${{ needs.build.outputs.previous_tag }}"
+          Write-Host "Skipping GitHub Release for ${{ needs.build.outputs.release_tag }} because MAJOR.MINOR.PATCH did not change compared with '$previousTag'."
