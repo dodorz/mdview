@@ -45,7 +45,7 @@ FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
     DEFPUSHBUTTON   "OK",IDOK,210,120,50,14
     LTEXT           "By dodo, 2026. Forked from mdview with LLM translation.",IDC_STATIC,50,16,188,16
-    LTEXT           "Version 1.0.0.0",IDC_STATIC,50,38,188,16
+    LTEXT           "Version 0.0.0.0",IDC_STATIC,50,38,188,16
     LTEXT           "Uses llmview.ini next to the executable for provider settings.",IDC_STATIC,50,60,220,16
     ICON            IDI_APP,IDC_STATIC,16,16,49,49
 END
@@ -112,7 +112,7 @@ FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
     DEFPUSHBUTTON   "确定",IDOK,210,120,50,14
     LTEXT           "dodo 制作，2026。基于 mdview 扩展，加入 LLM 翻译。",IDC_STATIC,50,16,188,16
-    LTEXT           "版本 1.0.0.0",IDC_STATIC,50,38,188,16
+    LTEXT           "版本 0.0.0.0",IDC_STATIC,50,38,188,16
     LTEXT           "LLM 提供方配置来自可执行文件同目录下的 llmview.ini。",IDC_STATIC,50,60,220,16
     ICON            IDI_APP,IDC_STATIC,16,16,49,49
 END
@@ -146,9 +146,11 @@ END
 
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
+// Version values are injected by GitHub Actions from the release tag.
+
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,0,1
- PRODUCTVERSION 1,1,0,16
+ FILEVERSION 0,0,0,0
+ PRODUCTVERSION 0,0,0,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -165,11 +167,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "dodo"
             VALUE "FileDescription", "Markdown viewer with LLM translation"
-            VALUE "FileVersion", "1,0,0,0"
+            VALUE "FileVersion", "0,0,0,0"
             VALUE "InternalName", "llmview.exe"
             VALUE "OriginalFilename", "llmview.exe"
             VALUE "ProductName", "LLM Markdown Viewer"
-            VALUE "ProductVersion", "1,1,0,15"
+            VALUE "ProductVersion", "0,0,0,0"
         END
     END
     BLOCK "VarFileInfo"
