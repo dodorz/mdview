@@ -17,12 +17,14 @@
 #define MARGIN  20
 #define PREVIEW_BYTES (96 * 1024)
 #define WM_APP_RENDER_COMPLETE (WM_APP + 1)
+#define WM_APP_OPEN_FILE (WM_APP + 2)
 
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
 processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"") // Enables visual styles.
 
 char* markdown2rtf(const char* md, const char* img_path);
+char* markdown2rtf_ex(const char* md, const char* img_path, int enable_images);
 
 // Global Variables:
 HINSTANCE hInst;								 // current instance
@@ -123,8 +125,17 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 	LPWSTR* szArglist;
 	int nArgs;
 	szArglist = CommandLineToArgvW(GetCommandLineW(), &nArgs);
-	if (NULL != szArglist && nArgs == 2)
-		FileOpen(szArglist[1]);
+	if (NULL != szArglist && nArgs == 2) {
+		size_t pathChars = wcslen(szArglist[1]) + 1;
+		WCHAR* pendingPath = (WCHAR*)malloc(pathChars * sizeof(WCHAR));
+		if (pendingPath != NULL) {
+			wcscpy_s(pendingPath, pathChars, szArglist[1]);
+			PostMessage(hMainWindow, WM_APP_OPEN_FILE, 0, (LPARAM)pendingPath);
+		}
+	}
+	if (szArglist != NULL) {
+		LocalFree(szArglist);
+	}
 
 	// Load accelerator table - IDR_ACCELERATOR must be defined in resource.h
 	// and accelerator table must be defined in Resource.rc
@@ -248,6 +259,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		case IDM_HELP_ABOUT:
 			DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hwnd, About);
 			break;
+		}
+		break;
+
+	case WM_APP_OPEN_FILE:
+		if ((WCHAR*)lParam != NULL) {
+			FileOpen((WCHAR*)lParam);
+			free((WCHAR*)lParam);
 		}
 		break;
 
@@ -419,7 +437,7 @@ FileOpen(WCHAR* lpszTextFileName)
 
 	char savedChar = mdFull[safeLen];
 	mdFull[safeLen] = '\0';
-	previewRtf = markdown2rtf(mdFull, path);
+	previewRtf = markdown2rtf_ex(mdFull, path, 0);
 	mdFull[safeLen] = savedChar;
 
 	if (previewRtf != NULL) {

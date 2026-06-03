@@ -21,6 +21,7 @@ static __declspec(thread) char fence_char = 0;
 static __declspec(thread) int fence_len = 0;
 static __declspec(thread) int in_table = 0;
 static __declspec(thread) int table_col_count = 0;
+static __declspec(thread) int embed_images = 1;
 
 static char*
 get_line(char** input)
@@ -62,6 +63,8 @@ const static char* hex_digits = "0123456789ABCDEF";
 
 static int
 get_image_format(const char* file_name);
+
+char* markdown2rtf_ex(const char* md, const char* img_path, int enable_images);
 
 static void
 append_buffer(const char* str)
@@ -267,6 +270,9 @@ get_image_format(const char* file_name)
 static void
 append_image(const char* file_name)
 {
+	if (!embed_images)
+		return;
+
 	int img_format = get_image_format_from_reference(file_name);
 	if (img_format == 0)
 		return;  // Unsupported format
@@ -1275,6 +1281,12 @@ process_table_row(const char* line, int is_header, int col_count)
 char*
 markdown2rtf(const char* md, const char* img_path)
 {
+	return markdown2rtf_ex(md, img_path, 1);
+}
+
+char*
+markdown2rtf_ex(const char* md, const char* img_path, int enable_images)
+{
 	size_t md_len = strlen(md);
 	buffer_size = (md_len * 4) + 4096; // heuristic
 	buffer_len = 0;
@@ -1285,6 +1297,7 @@ markdown2rtf(const char* md, const char* img_path)
 	char* pos = (char*)md;
 	char* line;
 	path = (char*)img_path;
+	embed_images = enable_images ? 1 : 0;
 
 	in_fenced_code = 0;
 	in_table = 0;
@@ -1641,5 +1654,6 @@ markdown2rtf(const char* md, const char* img_path)
 
 	append_buffer("}\n\0");
 	top_of_page = 1;
+	embed_images = 1;
 	return rtf;
 }

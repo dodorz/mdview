@@ -28,12 +28,14 @@
 #define WM_APP_RENDER_COMPLETE (WM_APP + 1)
 #define WM_APP_VISIBLE_RANGE_CHANGED (WM_APP + 2)
 #define WM_APP_AUTO_SAVE_RESULT (WM_APP + 3)
+#define WM_APP_OPEN_FILE (WM_APP + 4)
 
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
 processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 char* markdown2rtf(const char* md, const char* img_path);
+char* markdown2rtf_ex(const char* md, const char* img_path, int enable_images);
 
 typedef enum ParagraphState {
 	PARAGRAPH_PENDING = 0,
@@ -247,7 +249,15 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdS
 		int nArgs;
 		szArglist = CommandLineToArgvW(GetCommandLineW(), &nArgs);
 		if (NULL != szArglist && nArgs == 2) {
-			FileOpen(szArglist[1]);
+			size_t pathChars = wcslen(szArglist[1]) + 1;
+			WCHAR* pendingPath = (WCHAR*)malloc(pathChars * sizeof(WCHAR));
+			if (pendingPath != NULL) {
+				wcscpy_s(pendingPath, pathChars, szArglist[1]);
+				PostMessage(hMainWindow, WM_APP_OPEN_FILE, 0, (LPARAM)pendingPath);
+			}
+		}
+		if (szArglist != NULL) {
+			LocalFree(szArglist);
 		}
 	}
 
@@ -334,6 +344,13 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		case IDM_HELP_ABOUT:
 			DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hwnd, About);
 			break;
+		}
+		break;
+
+	case WM_APP_OPEN_FILE:
+		if ((WCHAR*)lParam != NULL) {
+			FileOpen((WCHAR*)lParam);
+			free((WCHAR*)lParam);
 		}
 		break;
 	case WM_MENUSELECT:
@@ -889,7 +906,7 @@ RenderInitialPreview(const DocumentSession* session)
 	memcpy(previewMarkdown, previewSource, previewLen);
 	previewMarkdown[previewLen] = '\0';
 
-	previewRtf = markdown2rtf(previewMarkdown, session->imagePath);
+	previewRtf = markdown2rtf_ex(previewMarkdown, session->imagePath, 0);
 	free(previewMarkdown);
 	if (fullDisplayMarkdown != NULL) free(fullDisplayMarkdown);
 	if (previewRtf == NULL) {
