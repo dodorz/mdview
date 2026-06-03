@@ -38,6 +38,7 @@
 #define WM_APP_VISIBLE_RANGE_CHANGED (WM_APP + 2)
 #define WM_APP_AUTO_SAVE_RESULT (WM_APP + 3)
 #define WM_APP_OPEN_FILE (WM_APP + 4)
+#define WM_APP_IMAGE_READY (WM_APP + 5)
 
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
@@ -122,6 +123,21 @@ typedef struct RenderSnapshot {
 	char* imagePath;
 } RenderSnapshot;
 
+typedef struct BackgroundImageQueue {
+	DWORD generation;
+	PendingImageRef* images;
+	int imageCount;
+} BackgroundImageQueue;
+
+typedef struct BackgroundImagePayload {
+	DWORD generation;
+	char* markerUtf8;
+	unsigned char* pngBytes;
+	size_t pngLength;
+	LONG widthPx;
+	LONG heightPx;
+} BackgroundImagePayload;
+
 typedef struct TranslationSlice {
 	DWORD generation;
 	int startParagraph;
@@ -151,10 +167,14 @@ HANDLE g_renderEvent = NULL;
 HANDLE g_translateEvent = NULL;
 HANDLE g_renderThread = NULL;
 HANDLE g_translateThread = NULL;
+HANDLE g_imageEvent = NULL;
+HANDLE g_imageThread = NULL;
 DocumentSession* g_session = NULL;
 LlmConfig g_llmConfig;
 WCHAR g_lastConfigError[256] = L"";
 DWORD g_pendingSaveGeneration = 0;
+CRITICAL_SECTION g_imageQueueLock;
+BackgroundImageQueue g_imageQueue = { 0 };
 
 static const DWORD ESC_DOUBLE_PRESS_INTERVAL_MS = 600;
 static ULONGLONG g_lastEscPressTimestamp = 0;
@@ -168,6 +188,7 @@ BOOL CreateToolBar();
 BOOL CreateStatusBar();
 DWORD WINAPI RenderThreadProc(LPVOID lpParam);
 DWORD WINAPI TranslateThreadProc(LPVOID lpParam);
+DWORD WINAPI ImageThreadProc(LPVOID lpParam);
 
 static DocumentSession* CreateSession(const ViewerLoadedFile* loadedFile, DWORD generation, BOOL translationEnabled);
 static void FreeSession(DocumentSession* session);
@@ -223,7 +244,13 @@ static BOOL DownloadUrlBytes(const char* url, unsigned char** dataOut, size_t* l
 static BOOL CreateInputStreamFromSourceUtf8(const char* sourceUtf8, IStream** streamOut);
 static BOOL CreatePngBytesAndSizeFromUtf8Source(const char* sourceUtf8, unsigned char** pngBytesOut, size_t* pngLengthOut, LONG* widthPxOut, LONG* heightPxOut);
 static BOOL InsertPendingImagesInRange(HWND hwnd, const RenderedDocument* doc, const VisibleCharRange* visibleRange, BOOL visibleOnly, BOOL* insertedFlags);
+static int CountRemainingPendingImages(const RenderedDocument* doc, const BOOL* insertedFlags);
+static PendingImageRef* CopyRemainingPendingImages(const RenderedDocument* doc, const BOOL* insertedFlags, int* countOut);
 static void FreePendingImageRefs(PendingImageRef* images, int imageCount);
+static void ClearBackgroundImageQueue(void);
+static void ReplaceBackgroundImageQueue(PendingImageRef* images, int imageCount, DWORD generation);
+static BOOL InsertDecodedImagePayload(HWND hwnd, const BackgroundImagePayload* payload);
+static void FreeBackgroundImagePayload(BackgroundImagePayload* payload);
 
 int APIENTRY
 WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
@@ -239,6 +266,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdS
 	SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
 	OleInitialize(NULL);
 	InitializeCriticalSection(&g_sessionLock);
+	InitializeCriticalSection(&g_imageQueueLock);
 
 	icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
 	icex.dwICC = ICC_COOL_CLASSES | ICC_BAR_CLASSES;
@@ -276,8 +304,10 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdS
 
 	g_renderEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
 	g_translateEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+	g_imageEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
 	g_renderThread = CreateThread(NULL, 0, RenderThreadProc, NULL, 0, NULL);
 	g_translateThread = CreateThread(NULL, 0, TranslateThreadProc, NULL, 0, NULL);
+	g_imageThread = CreateThread(NULL, 0, ImageThreadProc, NULL, 0, NULL);
 
 	DragAcceptFiles(hMainWindow, TRUE);
 	CreateToolBar();
@@ -490,6 +520,16 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	case WM_APP_VISIBLE_RANGE_CHANGED:
 		UpdateVisibleRangeFromScroll();
 		return 0;
+	case WM_APP_IMAGE_READY: {
+		BackgroundImagePayload* payload = (BackgroundImagePayload*)wParam;
+		if (payload != NULL) {
+			if (payload->generation == (DWORD)g_loadGeneration) {
+				InsertDecodedImagePayload(hRichEdit, payload);
+			}
+			FreeBackgroundImagePayload(payload);
+		}
+		return 0;
+	}
 	case WM_APP_AUTO_SAVE_RESULT:
 		if (wParam) {
 			SetStatusBarTextResource(IDS_STATUS_AUTOSAVED);
@@ -511,6 +551,7 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		g_exitThreads = TRUE;
 		SetEvent(g_renderEvent);
 		SetEvent(g_translateEvent);
+		SetEvent(g_imageEvent);
 		if (g_renderThread != NULL) {
 			WaitForSingleObject(g_renderThread, 3000);
 			CloseHandle(g_renderThread);
@@ -519,12 +560,19 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			WaitForSingleObject(g_translateThread, 3000);
 			CloseHandle(g_translateThread);
 		}
+		if (g_imageThread != NULL) {
+			WaitForSingleObject(g_imageThread, 3000);
+			CloseHandle(g_imageThread);
+		}
+		ClearBackgroundImageQueue();
 		if (g_renderEvent != NULL) CloseHandle(g_renderEvent);
 		if (g_translateEvent != NULL) CloseHandle(g_translateEvent);
+		if (g_imageEvent != NULL) CloseHandle(g_imageEvent);
 		EnterCriticalSection(&g_sessionLock);
 		FreeSession(g_session);
 		g_session = NULL;
 		LeaveCriticalSection(&g_sessionLock);
+		DeleteCriticalSection(&g_imageQueueLock);
 		DeleteCriticalSection(&g_sessionLock);
 		OleUninitialize();
 		PostQuitMessage(0);
@@ -811,6 +859,7 @@ TryAutoSaveCompletedTranslation(DWORD generation)
 static void
 ReplaceSession(DocumentSession* session)
 {
+	ClearBackgroundImageQueue();
 	EnterCriticalSection(&g_sessionLock);
 	FreeSession(g_session);
 	g_session = session;
@@ -1492,17 +1541,147 @@ InsertPendingImagesInRange(HWND hwnd, const RenderedDocument* doc, const Visible
 	return TRUE;
 }
 
+static int
+CountRemainingPendingImages(const RenderedDocument* doc, const BOOL* insertedFlags)
+{
+	int count = 0;
+	int i;
+
+	if (doc == NULL || insertedFlags == NULL) {
+		return 0;
+	}
+	for (i = 0; i < doc->imageCount; ++i) {
+		if (!insertedFlags[i] && doc->images[i].markerUtf8 != NULL && doc->images[i].pathUtf8 != NULL) {
+			count++;
+		}
+	}
+	return count;
+}
+
+static PendingImageRef*
+CopyRemainingPendingImages(const RenderedDocument* doc, const BOOL* insertedFlags, int* countOut)
+{
+	PendingImageRef* images;
+	int remainingCount;
+	int i;
+	int index = 0;
+
+	*countOut = 0;
+	remainingCount = CountRemainingPendingImages(doc, insertedFlags);
+	if (remainingCount <= 0) {
+		return NULL;
+	}
+	images = (PendingImageRef*)calloc((size_t)remainingCount, sizeof(PendingImageRef));
+	if (images == NULL) {
+		return NULL;
+	}
+	for (i = 0; i < doc->imageCount; ++i) {
+		if (!insertedFlags[i] && doc->images[i].markerUtf8 != NULL && doc->images[i].pathUtf8 != NULL) {
+			images[index].markerUtf8 = _strdup(doc->images[i].markerUtf8);
+			images[index].pathUtf8 = _strdup(doc->images[i].pathUtf8);
+			if (images[index].markerUtf8 == NULL || images[index].pathUtf8 == NULL) {
+				FreePendingImageRefs(images, remainingCount);
+				return NULL;
+			}
+			index++;
+		}
+	}
+	*countOut = remainingCount;
+	return images;
+}
+
+static void
+ClearBackgroundImageQueue(void)
+{
+	EnterCriticalSection(&g_imageQueueLock);
+	FreePendingImageRefs(g_imageQueue.images, g_imageQueue.imageCount);
+	g_imageQueue.images = NULL;
+	g_imageQueue.imageCount = 0;
+	g_imageQueue.generation = 0;
+	LeaveCriticalSection(&g_imageQueueLock);
+}
+
+static void
+ReplaceBackgroundImageQueue(PendingImageRef* images, int imageCount, DWORD generation)
+{
+	EnterCriticalSection(&g_imageQueueLock);
+	FreePendingImageRefs(g_imageQueue.images, g_imageQueue.imageCount);
+	g_imageQueue.images = images;
+	g_imageQueue.imageCount = imageCount;
+	g_imageQueue.generation = generation;
+	LeaveCriticalSection(&g_imageQueueLock);
+	if (imageCount > 0 && g_imageEvent != NULL) {
+		SetEvent(g_imageEvent);
+	}
+}
+
+static BOOL
+InsertDecodedImagePayload(HWND hwnd, const BackgroundImagePayload* payload)
+{
+	WCHAR markerW[128];
+	FINDTEXTEXW find;
+	CHARRANGE range;
+	IStream* imageStream = NULL;
+	RICHEDIT_IMAGE_PARAMETERS imageParams;
+
+	if (payload == NULL || payload->markerUtf8 == NULL || payload->pngBytes == NULL) {
+		return FALSE;
+	}
+	if (MultiByteToWideChar(CP_UTF8, 0, payload->markerUtf8, -1, markerW, _countof(markerW)) == 0) {
+		return FALSE;
+	}
+	range.cpMin = 0;
+	range.cpMax = -1;
+	find.chrg = range;
+	find.lpstrText = markerW;
+	if (SendMessageW(hwnd, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&find) == -1) {
+		return FALSE;
+	}
+	if (!CreateReadOnlyStreamFromBytes(payload->pngBytes, payload->pngLength, &imageStream)) {
+		return FALSE;
+	}
+
+	SendMessageW(hwnd, EM_SETREADONLY, FALSE, 0);
+	SendMessageW(hwnd, EM_EXSETSEL, 0, (LPARAM)&find.chrgText);
+	SendMessageW(hwnd, EM_REPLACESEL, FALSE, (LPARAM)L"");
+	ZeroMemory(&imageParams, sizeof(imageParams));
+	imageParams.xWidth = (payload->widthPx * 2540) / 96;
+	imageParams.yHeight = (payload->heightPx * 2540) / 96;
+	imageParams.Ascent = 0;
+	imageParams.Type = TA_BASELINE;
+	imageParams.pwszAlternateText = L"";
+	imageParams.pIStream = imageStream;
+	SendMessageW(hwnd, EM_INSERTIMAGE, 0, (LPARAM)&imageParams);
+	SendMessageW(hwnd, EM_SETREADONLY, TRUE, 0);
+	imageStream->lpVtbl->Release(imageStream);
+	return TRUE;
+}
+
+static void
+FreeBackgroundImagePayload(BackgroundImagePayload* payload)
+{
+	if (payload == NULL) {
+		return;
+	}
+	if (payload->markerUtf8 != NULL) free(payload->markerUtf8);
+	if (payload->pngBytes != NULL) free(payload->pngBytes);
+	free(payload);
+}
+
 static BOOL
 RenderIntoRichEdit(HWND hwnd, const RenderedDocument* doc)
 {
 	BOOL* insertedFlags = NULL;
 	VisibleCharRange visibleRange;
+	PendingImageRef* remainingImages = NULL;
+	int remainingCount = 0;
 
 	if (doc == NULL) {
 		return FALSE;
 	}
 	SetRichEditRtf(hwnd, doc->rtf);
 	if (doc->imageCount <= 0) {
+		ReplaceBackgroundImageQueue(NULL, 0, (DWORD)g_loadGeneration);
 		return TRUE;
 	}
 
@@ -1511,7 +1690,9 @@ RenderIntoRichEdit(HWND hwnd, const RenderedDocument* doc)
 		return FALSE;
 	}
 	visibleRange = GetVisibleCharRange(hwnd);
-	InsertPendingImagesInRange(hwnd, doc, &visibleRange, FALSE, insertedFlags);
+	InsertPendingImagesInRange(hwnd, doc, &visibleRange, TRUE, insertedFlags);
+	remainingImages = CopyRemainingPendingImages(doc, insertedFlags, &remainingCount);
+	ReplaceBackgroundImageQueue(remainingImages, remainingCount, (DWORD)g_loadGeneration);
 	free(insertedFlags);
 	InvalidateRect(hwnd, NULL, TRUE);
 	UpdateWindow(hwnd);
@@ -2041,6 +2222,69 @@ RenderThreadProc(LPVOID lpParam)
 		}
 		FreeRenderSnapshot(&snapshot);
 	}
+	return 0;
+}
+
+DWORD WINAPI
+ImageThreadProc(LPVOID lpParam)
+{
+	UNREFERENCED_PARAMETER(lpParam);
+	CoInitialize(NULL);
+	while (!g_exitThreads) {
+		PendingImageRef workItem = { 0 };
+		DWORD generation = 0;
+
+		WaitForSingleObject(g_imageEvent, INFINITE);
+		if (g_exitThreads) {
+			break;
+		}
+
+		for (;;) {
+			EnterCriticalSection(&g_imageQueueLock);
+			if (g_imageQueue.imageCount > 0) {
+				workItem.markerUtf8 = g_imageQueue.images[0].markerUtf8;
+				workItem.pathUtf8 = g_imageQueue.images[0].pathUtf8;
+				generation = g_imageQueue.generation;
+				if (g_imageQueue.imageCount > 1) {
+					memmove(g_imageQueue.images, g_imageQueue.images + 1, (size_t)(g_imageQueue.imageCount - 1) * sizeof(PendingImageRef));
+				}
+				g_imageQueue.imageCount--;
+				if (g_imageQueue.imageCount == 0) {
+					free(g_imageQueue.images);
+					g_imageQueue.images = NULL;
+					g_imageQueue.generation = 0;
+				}
+				else {
+					g_imageQueue.images[g_imageQueue.imageCount].markerUtf8 = NULL;
+					g_imageQueue.images[g_imageQueue.imageCount].pathUtf8 = NULL;
+				}
+			}
+			LeaveCriticalSection(&g_imageQueueLock);
+
+			if (workItem.markerUtf8 == NULL || workItem.pathUtf8 == NULL) {
+				break;
+			}
+
+			{
+				BackgroundImagePayload* payload = (BackgroundImagePayload*)calloc(1, sizeof(BackgroundImagePayload));
+				if (payload != NULL) {
+					payload->generation = generation;
+					payload->markerUtf8 = workItem.markerUtf8;
+					workItem.markerUtf8 = NULL;
+					if (!CreatePngBytesAndSizeFromUtf8Source(workItem.pathUtf8, &payload->pngBytes, &payload->pngLength, &payload->widthPx, &payload->heightPx) ||
+						!PostMessage(hMainWindow, WM_APP_IMAGE_READY, (WPARAM)payload, 0)) {
+						FreeBackgroundImagePayload(payload);
+					}
+				}
+			}
+
+			if (workItem.markerUtf8 != NULL) free(workItem.markerUtf8);
+			if (workItem.pathUtf8 != NULL) free(workItem.pathUtf8);
+			workItem.markerUtf8 = NULL;
+			workItem.pathUtf8 = NULL;
+		}
+	}
+	CoUninitialize();
 	return 0;
 }
 
