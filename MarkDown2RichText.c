@@ -594,6 +594,8 @@ get_image_format(const char* file_name)
 		return 1;  // PNG
 	else if (strcmp(lower_ext, ".jpg") == 0 || strcmp(lower_ext, ".jpeg") == 0)
 		return 2;  // JPEG
+	else if (strcmp(lower_ext, ".webp") == 0)
+		return 3;  // WebP
 	return 0;  // Unknown
 }
 
