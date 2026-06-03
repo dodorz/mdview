@@ -23,6 +23,15 @@ static __declspec(thread) int in_table = 0;
 static __declspec(thread) int table_col_count = 0;
 static __declspec(thread) int embed_images = 1;
 
+typedef struct PendingImageTag {
+	char* marker;
+	char* path;
+} PendingImage;
+
+static __declspec(thread) PendingImage* pending_images = NULL;
+static __declspec(thread) int pending_image_count = 0;
+static __declspec(thread) int pending_image_capacity = 0;
+
 static char*
 get_line(char** input)
 {
@@ -65,6 +74,10 @@ static int
 get_image_format(const char* file_name);
 
 char* markdown2rtf_ex(const char* md, const char* img_path, int enable_images);
+void markdown_clear_pending_images(void);
+int markdown_get_pending_image_count(void);
+const char* markdown_get_pending_image_marker(int index);
+const char* markdown_get_pending_image_path(int index);
 
 static void
 append_buffer(const char* str)
@@ -88,6 +101,90 @@ append_buffer(const char* str)
 }
 
 static void
+clear_pending_images_internal(void)
+{
+	int i;
+
+	if (pending_images == NULL)
+		return;
+
+	for (i = 0; i < pending_image_count; ++i) {
+		if (pending_images[i].marker != NULL)
+			free(pending_images[i].marker);
+		if (pending_images[i].path != NULL)
+			free(pending_images[i].path);
+	}
+	free(pending_images);
+	pending_images = NULL;
+	pending_image_count = 0;
+	pending_image_capacity = 0;
+}
+
+static int
+append_pending_image(const char* marker, const char* path_utf8)
+{
+	PendingImage* expanded;
+
+	if (marker == NULL || path_utf8 == NULL)
+		return 0;
+
+	if (pending_image_count >= pending_image_capacity) {
+		int new_capacity = pending_image_capacity == 0 ? 8 : pending_image_capacity * 2;
+		expanded = (PendingImage*)realloc(pending_images, sizeof(PendingImage) * new_capacity);
+		if (expanded == NULL)
+			return 0;
+		memset(expanded + pending_image_capacity, 0, sizeof(PendingImage) * (new_capacity - pending_image_capacity));
+		pending_images = expanded;
+		pending_image_capacity = new_capacity;
+	}
+
+	pending_images[pending_image_count].marker = _strdup(marker);
+	pending_images[pending_image_count].path = _strdup(path_utf8);
+	if (pending_images[pending_image_count].marker == NULL || pending_images[pending_image_count].path == NULL) {
+		if (pending_images[pending_image_count].marker != NULL) {
+			free(pending_images[pending_image_count].marker);
+			pending_images[pending_image_count].marker = NULL;
+		}
+		if (pending_images[pending_image_count].path != NULL) {
+			free(pending_images[pending_image_count].path);
+			pending_images[pending_image_count].path = NULL;
+		}
+		return 0;
+	}
+
+	pending_image_count++;
+	return 1;
+}
+
+void
+markdown_clear_pending_images(void)
+{
+	clear_pending_images_internal();
+}
+
+int
+markdown_get_pending_image_count(void)
+{
+	return pending_image_count;
+}
+
+const char*
+markdown_get_pending_image_marker(int index)
+{
+	if (index < 0 || index >= pending_image_count)
+		return NULL;
+	return pending_images[index].marker;
+}
+
+const char*
+markdown_get_pending_image_path(int index)
+{
+	if (index < 0 || index >= pending_image_count)
+		return NULL;
+	return pending_images[index].path;
+}
+
+static void
 append_hex_bytes(const unsigned char* data, size_t length)
 {
 	char hex[3] = "00";
@@ -98,6 +195,151 @@ append_hex_bytes(const unsigned char* data, size_t length)
 		hex[1] = hex_digits[data[i] & 0xF];
 		append_buffer(hex);
 	}
+}
+
+static unsigned int
+read_be32(const unsigned char* data)
+{
+	return ((unsigned int)data[0] << 24) |
+		((unsigned int)data[1] << 16) |
+		((unsigned int)data[2] << 8) |
+		(unsigned int)data[3];
+}
+
+static int
+read_jpeg_dimensions(FILE* file, int* width, int* height)
+{
+	int marker_prefix;
+	int marker_type;
+
+	if (file == NULL || width == NULL || height == NULL)
+		return 0;
+
+	if (fgetc(file) != 0xFF || fgetc(file) != 0xD8)
+		return 0;
+
+	for (;;) {
+		int segment_len;
+		int hi;
+		int lo;
+
+		do {
+			marker_prefix = fgetc(file);
+		} while (marker_prefix == 0xFF);
+
+		if (marker_prefix == EOF)
+			return 0;
+		marker_type = marker_prefix;
+
+		while (marker_type == 0xFF) {
+			marker_type = fgetc(file);
+			if (marker_type == EOF)
+				return 0;
+		}
+
+		if (marker_type == 0xD9 || marker_type == 0xDA)
+			return 0;
+		if (marker_type >= 0xD0 && marker_type <= 0xD7)
+			continue;
+
+		hi = fgetc(file);
+		lo = fgetc(file);
+		if (hi == EOF || lo == EOF)
+			return 0;
+
+		segment_len = (hi << 8) | lo;
+		if (segment_len < 2)
+			return 0;
+
+		if ((marker_type >= 0xC0 && marker_type <= 0xC3) ||
+			(marker_type >= 0xC5 && marker_type <= 0xC7) ||
+			(marker_type >= 0xC9 && marker_type <= 0xCB) ||
+			(marker_type >= 0xCD && marker_type <= 0xCF)) {
+			int precision = fgetc(file);
+			int height_hi = fgetc(file);
+			int height_lo = fgetc(file);
+			int width_hi = fgetc(file);
+			int width_lo = fgetc(file);
+			(void)precision;
+
+			if (height_hi == EOF || height_lo == EOF || width_hi == EOF || width_lo == EOF)
+				return 0;
+
+			*height = (height_hi << 8) | height_lo;
+			*width = (width_hi << 8) | width_lo;
+			return *width > 0 && *height > 0;
+		}
+
+		if (fseek(file, segment_len - 2, SEEK_CUR) != 0)
+			return 0;
+	}
+}
+
+static int
+read_png_dimensions(FILE* file, int* width, int* height)
+{
+	unsigned char header[24];
+	static const unsigned char png_signature[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+
+	if (file == NULL || width == NULL || height == NULL)
+		return 0;
+
+	if (fread(header, 1, sizeof(header), file) != sizeof(header))
+		return 0;
+	if (memcmp(header, png_signature, sizeof(png_signature)) != 0)
+		return 0;
+	if (memcmp(header + 12, "IHDR", 4) != 0)
+		return 0;
+
+	*width = (int)read_be32(header + 16);
+	*height = (int)read_be32(header + 20);
+	return *width > 0 && *height > 0;
+}
+
+static int
+read_image_dimensions(FILE* file, int img_format, int* width, int* height)
+{
+	int success = 0;
+
+	if (file == NULL || width == NULL || height == NULL)
+		return 0;
+
+	*width = 0;
+	*height = 0;
+
+	if (fseek(file, 0, SEEK_SET) != 0)
+		return 0;
+
+	if (img_format == 1)
+		success = read_png_dimensions(file, width, height);
+	else if (img_format == 2)
+		success = read_jpeg_dimensions(file, width, height);
+
+	if (fseek(file, 0, SEEK_SET) != 0)
+		return 0;
+
+	return success;
+}
+
+static void
+append_picture_header(int img_format, int width, int height)
+{
+	char buf[64];
+
+	append_buffer("\\par\\qc{\\pict\\");
+	if (img_format == 1)
+		append_buffer("pngblip");
+	else
+		append_buffer("jpegblip");
+
+	if (width > 0 && height > 0) {
+		sprintf_s(buf, sizeof(buf), "\\picw%d\\pich%d\\picwgoal%d\\pichgoal%d ",
+			width, height, width * 15, height * 15);
+	}
+	else {
+		strcpy_s(buf, sizeof(buf), "\\picscalex100\\picscaley100\\picscaled1 ");
+	}
+	append_buffer(buf);
 }
 
 static int
@@ -123,6 +365,61 @@ get_image_format_from_reference(const char* file_name)
 	}
 	reference[i] = '\0';
 	return get_image_format(reference);
+}
+
+static char*
+resolve_local_image_path_utf8(const char* file_name)
+{
+#ifdef _WIN32
+	WCHAR base_path_w[MAX_PATH * 2];
+	WCHAR file_name_w[MAX_PATH];
+	WCHAR full_path_w[MAX_PATH * 2];
+	WCHAR canonical_path[MAX_PATH * 2];
+	int size_needed;
+	char* result;
+
+	if (file_name == NULL || is_http_url(file_name))
+		return NULL;
+
+	if (MultiByteToWideChar(CP_UTF8, 0, path, -1, base_path_w, MAX_PATH * 2) == 0)
+		return NULL;
+	if (MultiByteToWideChar(CP_UTF8, 0, file_name, -1, file_name_w, MAX_PATH) == 0)
+		return NULL;
+
+	if (PathIsRelativeW(file_name_w)) {
+		wcscpy_s(full_path_w, MAX_PATH * 2, base_path_w);
+		wcscat_s(full_path_w, MAX_PATH * 2, L"\\");
+		wcscat_s(full_path_w, MAX_PATH * 2, file_name_w);
+	}
+	else {
+		wcscpy_s(full_path_w, MAX_PATH * 2, file_name_w);
+	}
+
+	if (!PathCanonicalizeW(canonical_path, full_path_w))
+		return NULL;
+
+	size_needed = WideCharToMultiByte(CP_UTF8, 0, canonical_path, -1, NULL, 0, NULL, NULL);
+	if (size_needed <= 0)
+		return NULL;
+
+	result = (char*)malloc(size_needed);
+	if (result == NULL)
+		return NULL;
+	if (WideCharToMultiByte(CP_UTF8, 0, canonical_path, -1, result, size_needed, NULL, NULL) == 0) {
+		free(result);
+		return NULL;
+	}
+	return result;
+#else
+	char full_path[1024];
+	char* result;
+
+	if (file_name == NULL)
+		return NULL;
+	sprintf_s(full_path, sizeof(full_path), "%s/%s", path, file_name);
+	result = _strdup(full_path);
+	return result;
+#endif
 }
 
 #ifdef _WIN32
@@ -276,85 +573,23 @@ append_image(const char* file_name)
 	int img_format = get_image_format_from_reference(file_name);
 	if (img_format == 0)
 		return;  // Unsupported format
-	
-	FILE* file;
-#ifdef _WIN32
-	if (is_http_url(file_name))
-	{
-		unsigned char* remote_data = NULL;
-		size_t remote_length = 0;
 
-		if (!download_url_bytes(file_name, &remote_data, &remote_length) || remote_data == NULL || remote_length == 0) {
-			free(remote_data);
+	if (!is_http_url(file_name)) {
+		char marker[64];
+		char* resolved_path = resolve_local_image_path_utf8(file_name);
+
+		if (resolved_path == NULL)
+			return;
+
+		sprintf_s(marker, sizeof(marker), "MDVIEWIMG_%04d", pending_image_count + 1);
+		if (!append_pending_image(marker, resolved_path)) {
+			free(resolved_path);
 			return;
 		}
-
-		append_buffer("\\par\\qc{\\pict\\");
-		if (img_format == 1)
-			append_buffer("pngblip");
-		else
-			append_buffer("jpegblip");
-		append_buffer("\\picscalex100\\picscaley100\\picscaled1 ");
-		append_hex_bytes(remote_data, remote_length);
-		append_buffer("\n}\\par\\ql\n");
-		free(remote_data);
+		free(resolved_path);
+		append_buffer(marker);
 		return;
 	}
-
-	// Build absolute path
-	WCHAR base_path_w[MAX_PATH * 2];
-	WCHAR file_name_w[MAX_PATH];
-	WCHAR full_path_w[MAX_PATH * 2];
-	WCHAR canonical_path[MAX_PATH * 2];
-	
-	MultiByteToWideChar(CP_UTF8, 0, path, -1, base_path_w, MAX_PATH * 2);
-	MultiByteToWideChar(CP_UTF8, 0, file_name, -1, file_name_w, MAX_PATH);
-	
-	if (PathIsRelativeW(file_name_w)) {
-		// Build full path: base_path + "\" + file_name
-		wcscpy_s(full_path_w, MAX_PATH * 2, base_path_w);
-		wcscat_s(full_path_w, MAX_PATH * 2, L"\\");
-		wcscat_s(full_path_w, MAX_PATH * 2, file_name_w);
-	}
-	else {
-		wcscpy_s(full_path_w, MAX_PATH * 2, file_name_w);
-	}
-	
-	// Canonicalize to resolve .. and .
-	if (!PathCanonicalizeW(canonical_path, full_path_w))
-	{
-		return;
-	}
-	
-	if (_wfopen_s(&file, canonical_path, L"rb") != 0)
-	{
-		file = NULL;
-	}
-#else
-	char full_path[1024];
-	sprintf_s(full_path, sizeof(full_path), "%s/%s", path, file_name);
-	file = fopen(full_path, "rb");
-#endif
-
-	if (file == NULL)
-		return;
-	
-	int c;
-	append_buffer("\\par\\qc{\\pict\\");
-	
-	if (img_format == 1)
-		append_buffer("pngblip");
-	else
-		append_buffer("jpegblip");
-	
-	append_buffer("\\picscalex100\\picscaley100\\picscaled1 ");
-	while ((c = getc(file)) != EOF) {
-		unsigned char byte = (unsigned char)c;
-		append_hex_bytes(&byte, 1);
-	}
-	append_buffer("\n}\\par\\ql\n");
-
-	fclose(file);
 }
 
 static int
@@ -513,10 +748,10 @@ is_ordered_list(const char* line)
 	while (*p == ' ' || *p == '\t')
 		p++;
 
-	if (!isdigit(*p))
+	if (!isdigit((unsigned char)*p))
 		return -1;
 
-	while (isdigit(*p))
+	while (isdigit((unsigned char)*p))
 		p++;
 
 	if (*p == '.' && *(p + 1) == ' ')
@@ -1298,6 +1533,7 @@ markdown2rtf_ex(const char* md, const char* img_path, int enable_images)
 	char* line;
 	path = (char*)img_path;
 	embed_images = enable_images ? 1 : 0;
+	clear_pending_images_internal();
 
 	in_fenced_code = 0;
 	in_table = 0;
@@ -1525,7 +1761,7 @@ markdown2rtf_ex(const char* md, const char* img_path, int enable_images)
 				p++;
 			char num[16];
 			int ni = 0;
-			while (isdigit(*p) && ni < 14) {
+			while (isdigit((unsigned char)*p) && ni < 14) {
 				num[ni++] = *p++;
 			}
 			num[ni] = 0;
