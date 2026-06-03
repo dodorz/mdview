@@ -7,7 +7,7 @@
 - `mdview.exe`：原始的 Markdown 查看器
 - `llmview.exe`：带 LLM 翻译功能的 Markdown 查看器
 
-两者都是基于 Win32 的原生 C/C++ 程序，偏向绿色便携使用方式：编译完成后可直接运行，不依赖安装器。
+两者都是基于 Win32 的原生 C/C++ 程序，保持绿色便携使用方式：编译完成后可直接运行，不依赖安装器。
 
 ![截图](Screenshot.jpg)
 
@@ -37,6 +37,15 @@
 - [viewer_common.c](viewer_common.c)：文件加载、窗口状态、字符串转换等公共逻辑
 - [MarkDown2RichText.c](MarkDown2RichText.c)：Markdown 转 RTF
 - [build.bat](build.bat)：Visual Studio Build Tools / MSBuild 构建脚本
+
+## 功能同步原则
+
+除 LLM 和翻译专属能力外，`mdview` 与 `llmview` 保持同步演进。
+
+- 新增功能、缺陷修复和行为调整，原则上都同时落实到两个程序
+- 两个查看器面向用户的逻辑目标应保持一致
+- 如果两边内部处理管线不同，实现不要求逐行一致，但最终行为一致且可维护
+- `llmview` 可以保留仅服务于翻译或 LLM 的调度、缓存和界面行为，这些部分不同步到 `mdview`
 
 ## 编译
 

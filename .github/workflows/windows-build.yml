@@ -2,10 +2,11 @@ name: Windows Build
 
 on:
   push:
-    branches:
-      - "main"
     tags:
-      - "*"
+      - "v*.*.*"
+      - "v*.*.*.*"
+      - "*.*.*"
+      - "*.*.*.*"
   pull_request:
     branches:
       - "**"
@@ -27,6 +28,7 @@ jobs:
       is_version_tag: ${{ steps.version.outputs.is_version_tag }}
       should_release: ${{ steps.version.outputs.should_release }}
       previous_tag: ${{ steps.version.outputs.previous_tag }}
+      previous_release_tag: ${{ steps.version.outputs.previous_release_tag }}
       normalized_version: ${{ steps.version.outputs.normalized_version }}
       release_tag: ${{ steps.version.outputs.release_tag }}
       version_quad: ${{ steps.version.outputs.version_quad }}
@@ -61,6 +63,7 @@ jobs:
           $isVersionTag = $false
           $shouldRelease = $false
           $previousTag = ""
+          $previousReleaseTag = ""
           $normalizedVersion = ""
           $releaseTag = $refName
           $versionQuad = ""
@@ -109,21 +112,35 @@ jobs:
               $previousTag = $previous.Tag
             }
 
-            $shouldRelease = $true
-            if ($null -ne $previous) {
-              if (
-                $previous.Major -eq $currentVersion.Major -and
-                $previous.Minor -eq $currentVersion.Minor -and
-                $previous.Patch -eq $currentVersion.Patch
-              ) {
-                $shouldRelease = $false
-              }
+            $previousRelease = $sortedTags | Where-Object {
+              $_.Tag -ne $currentVersion.Tag -and
+              (
+                $_.Major -lt $currentVersion.Major -or
+                ($_.Major -eq $currentVersion.Major -and $_.Minor -lt $currentVersion.Minor) -or
+                ($_.Major -eq $currentVersion.Major -and $_.Minor -eq $currentVersion.Minor -and $_.Patch -lt $currentVersion.Patch)
+              )
+            } | Select-Object -Last 1
+
+            if ($null -ne $previousRelease) {
+              $previousReleaseTag = $previousRelease.Tag
+            }
+
+            if (
+              $null -eq $previous -or
+              $previous.Major -ne $currentVersion.Major -or
+              $previous.Minor -ne $currentVersion.Minor -or
+              $previous.Patch -ne $currentVersion.Patch
+            ) {
+              $shouldRelease = $true
+            } else {
+              $shouldRelease = $false
             }
           }
 
           "is_version_tag=$($isVersionTag.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "should_release=$($shouldRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "previous_tag=$previousTag" >> $env:GITHUB_OUTPUT
+          "previous_release_tag=$previousReleaseTag" >> $env:GITHUB_OUTPUT
           "normalized_version=$normalizedVersion" >> $env:GITHUB_OUTPUT
           "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
           "version_quad=$versionQuad" >> $env:GITHUB_OUTPUT
@@ -163,13 +180,15 @@ jobs:
         shell: cmd
         run: build.bat Release x64
 
-      - name: Package 7z archive
+      - name: Package zip archive
         if: github.event_name == 'workflow_dispatch' || steps.version.outputs.is_version_tag == 'true'
         shell: powershell
         run: |
           $packageDir = "dist\MarkdownViewer-windows-x64"
+          $archivePath = "dist\MarkdownViewer-windows-x64.zip"
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
           Copy-Item "x64\Release\mdview.exe" -Destination $packageDir -Force
+          Copy-Item "x64\Release\llmview.exe" -Destination $packageDir -Force
 
           if (Test-Path "README.md") {
             Copy-Item "README.md" -Destination $packageDir -Force
@@ -179,18 +198,17 @@ jobs:
             Copy-Item "Screenshot.jpg" -Destination $packageDir -Force
           }
 
-          if (Test-Path "7z.exe") {
-            & ".\7z.exe" a -t7z "dist\MarkdownViewer-windows-x64.7z" ".\$packageDir\*"
-          } else {
-            & "7z" a -t7z "dist\MarkdownViewer-windows-x64.7z" ".\$packageDir\*"
+          if (Test-Path $archivePath) {
+            Remove-Item $archivePath -Force
           }
+          Compress-Archive -Path "$packageDir\*" -DestinationPath $archivePath -CompressionLevel Optimal
 
       - name: Upload artifact
         if: github.event_name == 'workflow_dispatch' || steps.version.outputs.is_version_tag == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: MarkdownViewer-windows-x64-7z
-          path: dist\MarkdownViewer-windows-x64.7z
+          name: MarkdownViewer-windows-x64-zip
+          path: dist\MarkdownViewer-windows-x64.zip
           if-no-files-found: error
 
   release:
@@ -207,7 +225,7 @@ jobs:
       - name: Download package artifact
         uses: actions/download-artifact@v4
         with:
-          name: MarkdownViewer-windows-x64-7z
+          name: MarkdownViewer-windows-x64-zip
           path: dist
 
       - name: Generate release notes
@@ -216,12 +234,12 @@ jobs:
         run: |
           $releaseTag = "${{ needs.build.outputs.release_tag }}"
           $normalizedVersion = "${{ needs.build.outputs.normalized_version }}"
-          $previousTag = "${{ needs.build.outputs.previous_tag }}"
+          $previousReleaseTag = "${{ needs.build.outputs.previous_release_tag }}"
           $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
           $previousDisplayTag = "none"
 
-          if (-not [string]::IsNullOrWhiteSpace($previousTag)) {
-            $previousDisplayTag = $previousTag
+          if (-not [string]::IsNullOrWhiteSpace($previousReleaseTag)) {
+            $previousDisplayTag = $previousReleaseTag
           }
 
           $lines = [System.Collections.Generic.List[string]]::new()
@@ -229,21 +247,22 @@ jobs:
           $lines.Add("")
           $lines.Add(("Normalized version: `{0}`" -f $normalizedVersion))
           $lines.Add("")
-          $lines.Add('Package: `MarkdownViewer-windows-x64.7z`')
+          $lines.Add('Package: `MarkdownViewer-windows-x64.zip`')
           $lines.Add("")
           $lines.Add('Contents:')
           $lines.Add('- `mdview.exe`')
+          $lines.Add('- `llmview.exe`')
           $lines.Add('- `README.md`')
           $lines.Add('- `Screenshot.jpg`')
           $lines.Add("")
-          $lines.Add(("Previous version tag: `{0}`" -f $previousDisplayTag))
+          $lines.Add(("Previous release tag: `{0}`" -f $previousDisplayTag))
           $lines.Add("")
           $lines.Add('Changes since last release:')
 
-          if ([string]::IsNullOrWhiteSpace($previousTag)) {
+          if ([string]::IsNullOrWhiteSpace($previousReleaseTag)) {
             $commitMessages = git log $releaseTag --pretty=format:"%s"
           } else {
-            $commitMessages = git log "$previousTag..$releaseTag" --pretty=format:"%s"
+            $commitMessages = git log "$previousReleaseTag..$releaseTag" --pretty=format:"%s"
           }
 
           if ($LASTEXITCODE -ne 0) {
@@ -270,7 +289,7 @@ jobs:
           tag_name: ${{ needs.build.outputs.release_tag }}
           name: MarkdownViewer ${{ needs.build.outputs.release_tag }}
           body_path: ${{ steps.notes.outputs.body_path }}
-          files: dist/MarkdownViewer-windows-x64.7z
+          files: dist/MarkdownViewer-windows-x64.zip
 
   skip-release-note:
     needs: build
@@ -282,4 +301,4 @@ jobs:
         shell: powershell
         run: |
           $previousTag = "${{ needs.build.outputs.previous_tag }}"
-          Write-Host "Skipping GitHub Release for ${{ needs.build.outputs.release_tag }} because MAJOR.MINOR.PATCH did not change compared with '$previousTag'."
+          Write-Host "Skipping GitHub Release for ${{ needs.build.outputs.release_tag }} because X.Y.Z did not change compared with '$previousTag'."

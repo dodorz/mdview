@@ -38,6 +38,15 @@ Both applications are native Win32 programs written in C/C++ and are intended to
 - [MarkDown2RichText.c](MarkDown2RichText.c): Markdown-to-RTF conversion
 - [build.bat](build.bat): build helper for Visual Studio Build Tools / MSBuild
 
+## Feature Parity Policy
+
+Except for LLM- and translation-specific capabilities, `mdview` and `llmview` will evolve together.
+
+- New features, bug fixes, and behavior changes will normally be applied to both applications
+- The user-visible logic goal will stay consistent between the two viewers
+- The implementation does not need to be identical line by line if each program has different internal pipelines
+- `llmview` may keep translation- or LLM-specific scheduling, caching, and UI behaviors that do not apply to `mdview`
+
 ## Build
 
 Requirements:
