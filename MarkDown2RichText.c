@@ -367,36 +367,70 @@ get_image_format_from_reference(const char* file_name)
 	return get_image_format(reference);
 }
 
+static void
+trim_image_reference(char* text)
+{
+	char* start;
+	char* end;
+	char* alias;
+
+	if (text == NULL)
+		return;
+
+	start = text;
+	while (*start == ' ' || *start == '\t')
+		start++;
+	if (start != text)
+		memmove(text, start, strlen(start) + 1);
+
+	alias = strchr(text, '|');
+	if (alias != NULL)
+		*alias = '\0';
+
+	end = text + strlen(text);
+	while (end > text && (end[-1] == ' ' || end[-1] == '\t'))
+		end--;
+	*end = '\0';
+}
+
 static char*
 resolve_local_image_path_utf8(const char* file_name)
 {
 #ifdef _WIN32
-	WCHAR base_path_w[MAX_PATH * 2];
-	WCHAR file_name_w[MAX_PATH];
-	WCHAR full_path_w[MAX_PATH * 2];
-	WCHAR canonical_path[MAX_PATH * 2];
+	WCHAR base_path_w[MAX_PATH * 4];
+	WCHAR search_dir_w[MAX_PATH * 4];
+	WCHAR file_name_w[MAX_PATH * 4];
+	WCHAR full_path_w[MAX_PATH * 4];
+	WCHAR canonical_path[MAX_PATH * 4];
 	int size_needed;
 	char* result;
 
 	if (file_name == NULL || is_http_url(file_name))
 		return NULL;
 
-	if (MultiByteToWideChar(CP_UTF8, 0, path, -1, base_path_w, MAX_PATH * 2) == 0)
+	if (path == NULL)
 		return NULL;
-	if (MultiByteToWideChar(CP_UTF8, 0, file_name, -1, file_name_w, MAX_PATH) == 0)
+	if (MultiByteToWideChar(CP_UTF8, 0, path, -1, base_path_w, _countof(base_path_w)) == 0)
+		return NULL;
+	if (MultiByteToWideChar(CP_UTF8, 0, file_name, -1, file_name_w, _countof(file_name_w)) == 0)
 		return NULL;
 
-	if (PathIsRelativeW(file_name_w)) {
-		wcscpy_s(full_path_w, MAX_PATH * 2, base_path_w);
-		wcscat_s(full_path_w, MAX_PATH * 2, L"\\");
-		wcscat_s(full_path_w, MAX_PATH * 2, file_name_w);
+	if (!PathIsRelativeW(file_name_w)) {
+		wcscpy_s(full_path_w, _countof(full_path_w), file_name_w);
+		if (!PathCanonicalizeW(canonical_path, full_path_w))
+			return NULL;
 	}
 	else {
-		wcscpy_s(full_path_w, MAX_PATH * 2, file_name_w);
+		wcscpy_s(search_dir_w, _countof(search_dir_w), base_path_w);
+		for (;;) {
+			if (swprintf_s(full_path_w, _countof(full_path_w), L"%s\\%s", search_dir_w, file_name_w) <= 0)
+				return NULL;
+			if (PathCanonicalizeW(canonical_path, full_path_w) && PathFileExistsW(canonical_path))
+				break;
+			if (!PathRemoveFileSpecW(search_dir_w))
+				return NULL;
+		}
 	}
-
-	if (!PathCanonicalizeW(canonical_path, full_path_w))
-		return NULL;
 
 	size_needed = WideCharToMultiByte(CP_UTF8, 0, canonical_path, -1, NULL, 0, NULL, NULL);
 	if (size_needed <= 0)
@@ -560,27 +594,35 @@ get_image_format(const char* file_name)
 		return 1;  // PNG
 	else if (strcmp(lower_ext, ".jpg") == 0 || strcmp(lower_ext, ".jpeg") == 0)
 		return 2;  // JPEG
-	
 	return 0;  // Unknown
 }
 
 static void
 append_image(const char* file_name)
 {
+	char reference[1024];
+
 	if (!embed_images)
+		return;
+	if (file_name == NULL)
+		return;
+
+	strncpy_s(reference, sizeof(reference), file_name, _TRUNCATE);
+	trim_image_reference(reference);
+	if (reference[0] == '\0')
 		return;
 
 	{
 		char marker[64];
 		char* resolved_path;
 
-		if (is_http_url(file_name))
-			resolved_path = _strdup(file_name);
+		if (is_http_url(reference))
+			resolved_path = _strdup(reference);
 		else {
-			int img_format = get_image_format_from_reference(file_name);
+			int img_format = get_image_format_from_reference(reference);
 			if (img_format == 0)
 				return;  // Unsupported local format
-			resolved_path = resolve_local_image_path_utf8(file_name);
+			resolved_path = resolve_local_image_path_utf8(reference);
 		}
 
 		if (resolved_path == NULL)
@@ -1388,6 +1430,16 @@ append_buffer_line(char* line)
 					pos = end + 1;
 					continue;
 				}
+			}
+		}
+
+		if (strncmp(pos, "![[", 3) == 0) {
+			char* end = strstr(pos + 3, "]]");
+			if (end) {
+				*end = 0;
+				append_image(pos + 3);
+				pos = end + 2;
+				continue;
 			}
 		}
 

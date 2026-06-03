@@ -4,10 +4,19 @@
 #include <RichEdit.h>
 #include <Shellapi.h>
 #include <ShellScalingApi.h>
+#include <objidl.h>
+#include <ole2.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <wctype.h>
+#include <initguid.h>
+#include <wincodec.h>
+#include <winhttp.h>
+
+#pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "winhttp.lib")
 
 #include "Resource.h"
 #include "viewer_common.h"
@@ -36,6 +45,10 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 char* markdown2rtf(const char* md, const char* img_path);
 char* markdown2rtf_ex(const char* md, const char* img_path, int enable_images);
+void markdown_clear_pending_images(void);
+int markdown_get_pending_image_count(void);
+const char* markdown_get_pending_image_marker(int index);
+const char* markdown_get_pending_image_path(int index);
 
 typedef enum ParagraphState {
 	PARAGRAPH_PENDING = 0,
@@ -65,6 +78,29 @@ typedef struct TextBuffer {
 	size_t length;
 	size_t capacity;
 } TextBuffer;
+
+typedef struct PendingImageRef {
+	char* markerUtf8;
+	char* pathUtf8;
+} PendingImageRef;
+
+typedef struct RenderedDocument {
+	char* rtf;
+	PendingImageRef* images;
+	int imageCount;
+} RenderedDocument;
+
+typedef struct RtfStreamContext {
+	const char* data;
+	size_t length;
+	size_t offset;
+} RtfStreamContext;
+
+typedef struct VisibleCharRange {
+	LONG cpMin;
+	LONG cpMax;
+	BOOL valid;
+} VisibleCharRange;
 
 typedef struct DocumentSession {
 	DWORD generation;
@@ -176,6 +212,18 @@ static void ClearPendingSaveRequest(void);
 static void StartDeferredSave(const WCHAR* filePath, DWORD generation);
 static BOOL TryAutoSaveCompletedTranslation(DWORD generation);
 static BOOL HandleSaveTranslatedCommand(void);
+static DWORD CALLBACK RichEditStreamInCallback(DWORD_PTR cookie, LPBYTE buffer, LONG cb, LONG* pcb);
+static BOOL SetRichEditRtf(HWND hwnd, const char* rtfText);
+static BOOL RenderIntoRichEdit(HWND hwnd, const RenderedDocument* doc);
+static VisibleCharRange GetVisibleCharRange(HWND hwnd);
+static RenderedDocument* RenderMarkdownDocument(const char* markdown, const char* imgPath, int enableImages);
+static void FreeRenderedDocument(RenderedDocument* doc);
+static BOOL CreateReadOnlyStreamFromBytes(const unsigned char* data, size_t length, IStream** streamOut);
+static BOOL DownloadUrlBytes(const char* url, unsigned char** dataOut, size_t* lengthOut);
+static BOOL CreateInputStreamFromSourceUtf8(const char* sourceUtf8, IStream** streamOut);
+static BOOL CreatePngBytesAndSizeFromUtf8Source(const char* sourceUtf8, unsigned char** pngBytesOut, size_t* pngLengthOut, LONG* widthPxOut, LONG* heightPxOut);
+static BOOL InsertPendingImagesInRange(HWND hwnd, const RenderedDocument* doc, const VisibleCharRange* visibleRange, BOOL visibleOnly, BOOL* insertedFlags);
+static void FreePendingImageRefs(PendingImageRef* images, int imageCount);
 
 int APIENTRY
 WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
@@ -189,6 +237,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdS
 	UNREFERENCED_PARAMETER(lpCmdLine);
 
 	SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
+	OleInitialize(NULL);
 	InitializeCriticalSection(&g_sessionLock);
 
 	icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
@@ -418,13 +467,10 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		break;
 	case WM_APP_RENDER_COMPLETE: {
 		DWORD generation = (DWORD)lParam;
-		char* rtfResult = (char*)wParam;
-		if (rtfResult != NULL) {
+		RenderedDocument* rendered = (RenderedDocument*)wParam;
+		if (rendered != NULL) {
 			if (generation == (DWORD)g_loadGeneration) {
-				SETTEXTEX se;
-				se.codepage = 65001;
-				se.flags = ST_DEFAULT;
-				SendMessageA(hRichEdit, EM_SETTEXTEX, (WPARAM)&se, (LPARAM)rtfResult);
+				RenderIntoRichEdit(hRichEdit, rendered);
 				EnterCriticalSection(&g_sessionLock);
 				if (g_session != NULL && g_session->generation == generation && g_session->translationEnabled && g_session->hasTranslatedContent && VisibleRangeHasPending(g_session)) {
 					SetStatusBarTextResource(IDS_STATUS_TRANSLATING_REST);
@@ -437,7 +483,7 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 				}
 				LeaveCriticalSection(&g_sessionLock);
 			}
-			free(rtfResult);
+			FreeRenderedDocument(rendered);
 		}
 		return 0;
 	}
@@ -480,6 +526,7 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		g_session = NULL;
 		LeaveCriticalSection(&g_sessionLock);
 		DeleteCriticalSection(&g_sessionLock);
+		OleUninitialize();
 		PostQuitMessage(0);
 		break;
 	}
@@ -865,6 +912,610 @@ FreeSession(DocumentSession* session)
 	if (session->sourceMarkdown != NULL) free(session->sourceMarkdown);
 	if (session->imagePath != NULL) free(session->imagePath);
 	free(session);
+}
+
+static DWORD CALLBACK
+RichEditStreamInCallback(DWORD_PTR cookie, LPBYTE buffer, LONG cb, LONG* pcb)
+{
+	RtfStreamContext* ctx = (RtfStreamContext*)cookie;
+	size_t remaining;
+	size_t chunk;
+
+	if (pcb == NULL || ctx == NULL || buffer == NULL) {
+		return 1;
+	}
+	if (ctx->offset >= ctx->length) {
+		*pcb = 0;
+		return 0;
+	}
+
+	remaining = ctx->length - ctx->offset;
+	chunk = remaining < (size_t)cb ? remaining : (size_t)cb;
+	memcpy(buffer, ctx->data + ctx->offset, chunk);
+	ctx->offset += chunk;
+	*pcb = (LONG)chunk;
+	return 0;
+}
+
+static BOOL
+SetRichEditRtf(HWND hwnd, const char* rtfText)
+{
+	EDITSTREAM stream;
+	RtfStreamContext ctx;
+	CHARRANGE allText;
+	const char* safeRtf = rtfText != NULL ? rtfText : "{\\rtf1\\ansi }";
+
+	ctx.data = safeRtf;
+	ctx.length = strlen(safeRtf);
+	ctx.offset = 0;
+
+	ZeroMemory(&stream, sizeof(stream));
+	stream.dwCookie = (DWORD_PTR)&ctx;
+	stream.pfnCallback = RichEditStreamInCallback;
+
+	allText.cpMin = 0;
+	allText.cpMax = -1;
+	SendMessage(hwnd, WM_SETREDRAW, FALSE, 0);
+	SendMessage(hwnd, EM_SETUNDOLIMIT, 0, 0);
+	SendMessageW(hwnd, EM_EXSETSEL, 0, (LPARAM)&allText);
+	SendMessage(hwnd, EM_STREAMIN, (WPARAM)(SF_RTF | SFF_SELECTION | SF_USECODEPAGE | (CP_UTF8 << 16)), (LPARAM)&stream);
+	SendMessage(hwnd, WM_SETREDRAW, TRUE, 0);
+	InvalidateRect(hwnd, NULL, TRUE);
+	UpdateWindow(hwnd);
+	return TRUE;
+}
+
+static VisibleCharRange
+GetVisibleCharRange(HWND hwnd)
+{
+	VisibleCharRange range;
+	POINTL topPoint;
+	POINTL bottomPoint;
+	RECT rect;
+	LRESULT topChar;
+	LRESULT bottomChar;
+
+	range.cpMin = 0;
+	range.cpMax = 0;
+	range.valid = FALSE;
+	if (hwnd == NULL || !GetClientRect(hwnd, &rect)) {
+		return range;
+	}
+
+	topPoint.x = rect.left + 4;
+	topPoint.y = rect.top + 4;
+	bottomPoint.x = rect.left + 4;
+	bottomPoint.y = rect.bottom > 8 ? rect.bottom - 8 : rect.bottom;
+
+	topChar = SendMessageW(hwnd, EM_CHARFROMPOS, 0, (LPARAM)&topPoint);
+	bottomChar = SendMessageW(hwnd, EM_CHARFROMPOS, 0, (LPARAM)&bottomPoint);
+	if (topChar < 0 || bottomChar < 0) {
+		return range;
+	}
+
+	range.cpMin = (LONG)topChar;
+	range.cpMax = (LONG)bottomChar;
+	if (range.cpMax < range.cpMin) {
+		LONG temp = range.cpMin;
+		range.cpMin = range.cpMax;
+		range.cpMax = temp;
+	}
+	range.valid = TRUE;
+	return range;
+}
+
+static BOOL
+CreateReadOnlyStreamFromBytes(const unsigned char* data, size_t length, IStream** streamOut)
+{
+	HGLOBAL globalData = NULL;
+	void* memory = NULL;
+	IStream* stream = NULL;
+
+	*streamOut = NULL;
+	globalData = GlobalAlloc(GMEM_MOVEABLE, length == 0 ? 1 : length);
+	if (globalData == NULL) {
+		goto cleanup;
+	}
+	memory = GlobalLock(globalData);
+	if (memory == NULL) {
+		goto cleanup;
+	}
+	if (length > 0) {
+		memcpy(memory, data, length);
+	}
+	GlobalUnlock(globalData);
+	memory = NULL;
+
+	if (FAILED(CreateStreamOnHGlobal(globalData, TRUE, &stream)) || stream == NULL) {
+		goto cleanup;
+	}
+
+	*streamOut = stream;
+	stream = NULL;
+	globalData = NULL;
+	return TRUE;
+
+cleanup:
+	if (memory != NULL) {
+		GlobalUnlock(globalData);
+	}
+	if (stream != NULL) {
+		stream->lpVtbl->Release(stream);
+	}
+	if (globalData != NULL) {
+		GlobalFree(globalData);
+	}
+	return FALSE;
+}
+
+static BOOL
+DownloadUrlBytes(const char* url, unsigned char** dataOut, size_t* lengthOut)
+{
+	WCHAR urlW[2048];
+	URL_COMPONENTS components;
+	HINTERNET hSession = NULL;
+	HINTERNET hConnect = NULL;
+	HINTERNET hRequest = NULL;
+	WCHAR hostName[256];
+	WCHAR urlPath[2048];
+	DWORD flags = 0;
+	unsigned char* buffer = NULL;
+	size_t length = 0;
+
+	*dataOut = NULL;
+	*lengthOut = 0;
+
+	if (MultiByteToWideChar(CP_UTF8, 0, url, -1, urlW, _countof(urlW)) == 0) {
+		return FALSE;
+	}
+
+	ZeroMemory(&components, sizeof(components));
+	components.dwStructSize = sizeof(components);
+	components.lpszHostName = hostName;
+	components.dwHostNameLength = _countof(hostName);
+	components.lpszUrlPath = urlPath;
+	components.dwUrlPathLength = _countof(urlPath);
+	components.dwSchemeLength = (DWORD)-1;
+
+	if (!WinHttpCrackUrl(urlW, 0, 0, &components)) {
+		goto cleanup;
+	}
+	if (components.nScheme == INTERNET_SCHEME_HTTPS) {
+		flags |= WINHTTP_FLAG_SECURE;
+	}
+
+	hSession = WinHttpOpen(L"llmview/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+		WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+	if (hSession == NULL) {
+		goto cleanup;
+	}
+	hConnect = WinHttpConnect(hSession, hostName, components.nPort, 0);
+	if (hConnect == NULL) {
+		goto cleanup;
+	}
+	hRequest = WinHttpOpenRequest(hConnect, L"GET", urlPath, NULL,
+		WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+	if (hRequest == NULL) {
+		goto cleanup;
+	}
+	if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+		!WinHttpReceiveResponse(hRequest, NULL)) {
+		goto cleanup;
+	}
+
+	for (;;) {
+		DWORD available = 0;
+		DWORD bytesRead = 0;
+		unsigned char* newBuffer;
+
+		if (!WinHttpQueryDataAvailable(hRequest, &available)) {
+			goto cleanup;
+		}
+		if (available == 0) {
+			break;
+		}
+
+		newBuffer = (unsigned char*)realloc(buffer, length + available);
+		if (newBuffer == NULL) {
+			goto cleanup;
+		}
+		buffer = newBuffer;
+
+		if (!WinHttpReadData(hRequest, buffer + length, available, &bytesRead)) {
+			goto cleanup;
+		}
+		length += bytesRead;
+	}
+
+	*dataOut = buffer;
+	*lengthOut = length;
+	buffer = NULL;
+
+cleanup:
+	if (buffer != NULL) {
+		free(buffer);
+	}
+	if (hRequest != NULL) {
+		WinHttpCloseHandle(hRequest);
+	}
+	if (hConnect != NULL) {
+		WinHttpCloseHandle(hConnect);
+	}
+	if (hSession != NULL) {
+		WinHttpCloseHandle(hSession);
+	}
+	return *dataOut != NULL;
+}
+
+static BOOL
+CreateInputStreamFromSourceUtf8(const char* sourceUtf8, IStream** streamOut)
+{
+	unsigned char* data = NULL;
+	size_t length = 0;
+	BOOL ok;
+
+	if (_strnicmp(sourceUtf8, "http://", 7) != 0 && _strnicmp(sourceUtf8, "https://", 8) != 0) {
+		return FALSE;
+	}
+
+	ok = DownloadUrlBytes(sourceUtf8, &data, &length) && CreateReadOnlyStreamFromBytes(data, length, streamOut);
+	if (data != NULL) {
+		free(data);
+	}
+	return ok;
+}
+
+static BOOL
+CreatePngBytesAndSizeFromUtf8Source(const char* sourceUtf8, unsigned char** pngBytesOut, size_t* pngLengthOut, LONG* widthPxOut, LONG* heightPxOut)
+{
+	WCHAR pathW[MAX_PATH * 2];
+	IWICImagingFactory* factory = NULL;
+	IWICBitmapDecoder* decoder = NULL;
+	IWICBitmapFrameDecode* frame = NULL;
+	IWICStream* wicStream = NULL;
+	IWICBitmapEncoder* encoder = NULL;
+	IWICBitmapFrameEncode* encodeFrame = NULL;
+	IPropertyBag2* propertyBag = NULL;
+	IStream* inputStream = NULL;
+	IStream* outputStream = NULL;
+	HGLOBAL outputGlobal = NULL;
+	void* outputBytes = NULL;
+	HRESULT hr;
+	BOOL ok = FALSE;
+
+	*pngBytesOut = NULL;
+	*pngLengthOut = 0;
+	if (widthPxOut != NULL) *widthPxOut = 0;
+	if (heightPxOut != NULL) *heightPxOut = 0;
+
+	hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
+		&IID_IWICImagingFactory, (void**)&factory);
+	if (FAILED(hr) || factory == NULL) {
+		goto cleanup;
+	}
+
+	if (_strnicmp(sourceUtf8, "http://", 7) == 0 || _strnicmp(sourceUtf8, "https://", 8) == 0) {
+		if (!CreateInputStreamFromSourceUtf8(sourceUtf8, &inputStream)) {
+			goto cleanup;
+		}
+		hr = factory->lpVtbl->CreateDecoderFromStream(factory, inputStream, NULL,
+			WICDecodeMetadataCacheOnLoad, &decoder);
+		if (FAILED(hr) || decoder == NULL) {
+			goto cleanup;
+		}
+	}
+	else {
+		if (MultiByteToWideChar(CP_UTF8, 0, sourceUtf8, -1, pathW, _countof(pathW)) == 0) {
+			goto cleanup;
+		}
+		hr = factory->lpVtbl->CreateDecoderFromFilename(factory, pathW, NULL, GENERIC_READ,
+			WICDecodeMetadataCacheOnLoad, &decoder);
+		if (FAILED(hr) || decoder == NULL) {
+			goto cleanup;
+		}
+	}
+
+	hr = decoder->lpVtbl->GetFrame(decoder, 0, &frame);
+	if (FAILED(hr) || frame == NULL) {
+		goto cleanup;
+	}
+
+	if (widthPxOut != NULL || heightPxOut != NULL) {
+		UINT width = 0;
+		UINT height = 0;
+		hr = frame->lpVtbl->GetSize(frame, &width, &height);
+		if (FAILED(hr)) {
+			goto cleanup;
+		}
+		if (widthPxOut != NULL) *widthPxOut = (LONG)width;
+		if (heightPxOut != NULL) *heightPxOut = (LONG)height;
+	}
+
+	hr = CreateStreamOnHGlobal(NULL, TRUE, &outputStream);
+	if (FAILED(hr) || outputStream == NULL) {
+		goto cleanup;
+	}
+	hr = factory->lpVtbl->CreateStream(factory, &wicStream);
+	if (FAILED(hr) || wicStream == NULL) {
+		goto cleanup;
+	}
+	hr = wicStream->lpVtbl->InitializeFromIStream(wicStream, outputStream);
+	if (FAILED(hr)) {
+		goto cleanup;
+	}
+	hr = factory->lpVtbl->CreateEncoder(factory, &GUID_ContainerFormatPng, NULL, &encoder);
+	if (FAILED(hr) || encoder == NULL) {
+		goto cleanup;
+	}
+	hr = encoder->lpVtbl->Initialize(encoder, (IStream*)wicStream, WICBitmapEncoderNoCache);
+	if (FAILED(hr)) {
+		goto cleanup;
+	}
+	hr = encoder->lpVtbl->CreateNewFrame(encoder, &encodeFrame, &propertyBag);
+	if (FAILED(hr) || encodeFrame == NULL) {
+		goto cleanup;
+	}
+	hr = encodeFrame->lpVtbl->Initialize(encodeFrame, propertyBag);
+	if (FAILED(hr)) {
+		goto cleanup;
+	}
+	{
+		UINT width = 0;
+		UINT height = 0;
+		hr = frame->lpVtbl->GetSize(frame, &width, &height);
+		if (FAILED(hr) || FAILED(encodeFrame->lpVtbl->SetSize(encodeFrame, width, height))) {
+			goto cleanup;
+		}
+	}
+	{
+		WICPixelFormatGUID pixelFormat = GUID_WICPixelFormatDontCare;
+		hr = encodeFrame->lpVtbl->SetPixelFormat(encodeFrame, &pixelFormat);
+		if (FAILED(hr)) {
+			goto cleanup;
+		}
+	}
+	hr = encodeFrame->lpVtbl->WriteSource(encodeFrame, (IWICBitmapSource*)frame, NULL);
+	if (FAILED(hr) || FAILED(encodeFrame->lpVtbl->Commit(encodeFrame)) || FAILED(encoder->lpVtbl->Commit(encoder))) {
+		goto cleanup;
+	}
+	hr = GetHGlobalFromStream(outputStream, &outputGlobal);
+	if (FAILED(hr) || outputGlobal == NULL) {
+		goto cleanup;
+	}
+	*pngLengthOut = (size_t)GlobalSize(outputGlobal);
+	*pngBytesOut = (unsigned char*)malloc(*pngLengthOut == 0 ? 1 : *pngLengthOut);
+	if (*pngBytesOut == NULL) {
+		*pngLengthOut = 0;
+		goto cleanup;
+	}
+	outputBytes = GlobalLock(outputGlobal);
+	if (outputBytes == NULL) {
+		goto cleanup;
+	}
+	if (*pngLengthOut > 0) {
+		memcpy(*pngBytesOut, outputBytes, *pngLengthOut);
+	}
+	ok = TRUE;
+
+cleanup:
+	if (!ok && *pngBytesOut != NULL) {
+		free(*pngBytesOut);
+		*pngBytesOut = NULL;
+		*pngLengthOut = 0;
+	}
+	if (outputBytes != NULL) {
+		GlobalUnlock(outputGlobal);
+	}
+	if (propertyBag != NULL) propertyBag->lpVtbl->Release(propertyBag);
+	if (encodeFrame != NULL) encodeFrame->lpVtbl->Release(encodeFrame);
+	if (encoder != NULL) encoder->lpVtbl->Release(encoder);
+	if (wicStream != NULL) wicStream->lpVtbl->Release(wicStream);
+	if (frame != NULL) frame->lpVtbl->Release(frame);
+	if (decoder != NULL) decoder->lpVtbl->Release(decoder);
+	if (factory != NULL) factory->lpVtbl->Release(factory);
+	if (inputStream != NULL) inputStream->lpVtbl->Release(inputStream);
+	if (outputStream != NULL) outputStream->lpVtbl->Release(outputStream);
+	return ok;
+}
+
+static RenderedDocument*
+RenderMarkdownDocument(const char* markdown, const char* imgPath, int enableImages)
+{
+	RenderedDocument* doc;
+	int i;
+
+	doc = (RenderedDocument*)calloc(1, sizeof(RenderedDocument));
+	if (doc == NULL) {
+		return NULL;
+	}
+	doc->rtf = markdown2rtf_ex(markdown, imgPath, enableImages);
+	if (doc->rtf == NULL) {
+		free(doc);
+		return NULL;
+	}
+
+	doc->imageCount = markdown_get_pending_image_count();
+	if (doc->imageCount > 0) {
+		doc->images = (PendingImageRef*)calloc((size_t)doc->imageCount, sizeof(PendingImageRef));
+		if (doc->images == NULL) {
+			free(doc->rtf);
+			free(doc);
+			return NULL;
+		}
+		for (i = 0; i < doc->imageCount; ++i) {
+			const char* marker = markdown_get_pending_image_marker(i);
+			const char* pathUtf8 = markdown_get_pending_image_path(i);
+			doc->images[i].markerUtf8 = marker ? _strdup(marker) : NULL;
+			doc->images[i].pathUtf8 = pathUtf8 ? _strdup(pathUtf8) : NULL;
+		}
+	}
+
+	markdown_clear_pending_images();
+	return doc;
+}
+
+static void
+FreePendingImageRefs(PendingImageRef* images, int imageCount)
+{
+	int i;
+
+	if (images == NULL) {
+		return;
+	}
+	for (i = 0; i < imageCount; ++i) {
+		if (images[i].markerUtf8 != NULL) free(images[i].markerUtf8);
+		if (images[i].pathUtf8 != NULL) free(images[i].pathUtf8);
+	}
+	free(images);
+}
+
+static void
+FreeRenderedDocument(RenderedDocument* doc)
+{
+	if (doc == NULL) {
+		return;
+	}
+	FreePendingImageRefs(doc->images, doc->imageCount);
+	if (doc->rtf != NULL) free(doc->rtf);
+	free(doc);
+}
+
+static BOOL
+InsertPendingImagesInRange(HWND hwnd, const RenderedDocument* doc, const VisibleCharRange* visibleRange, BOOL visibleOnly, BOOL* insertedFlags)
+{
+	int insertedThisPass = 0;
+	int i;
+
+	if (doc == NULL || doc->imageCount <= 0 || insertedFlags == NULL) {
+		return TRUE;
+	}
+	SendMessageW(hwnd, EM_SETREADONLY, FALSE, 0);
+
+	for (i = 0; i < doc->imageCount; ++i) {
+		if (insertedFlags[i]) {
+			insertedThisPass++;
+		}
+	}
+
+	while (insertedThisPass < doc->imageCount) {
+		int bestIndex = -1;
+		LONG bestScore = LONG_MAX;
+		FINDTEXTEXW bestFind;
+		int scanIndex;
+
+		ZeroMemory(&bestFind, sizeof(bestFind));
+		for (scanIndex = 0; scanIndex < doc->imageCount; ++scanIndex) {
+			FINDTEXTEXW find;
+			CHARRANGE range;
+			WCHAR markerW[128];
+			LONG score;
+
+			if (insertedFlags[scanIndex] || doc->images[scanIndex].markerUtf8 == NULL || doc->images[scanIndex].pathUtf8 == NULL) {
+				continue;
+			}
+			if (MultiByteToWideChar(CP_UTF8, 0, doc->images[scanIndex].markerUtf8, -1, markerW, _countof(markerW)) == 0) {
+				continue;
+			}
+
+			range.cpMin = 0;
+			range.cpMax = -1;
+			find.chrg = range;
+			find.lpstrText = markerW;
+			if (SendMessageW(hwnd, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&find) == -1) {
+				continue;
+			}
+
+			if (visibleRange == NULL || !visibleRange->valid) {
+				score = find.chrgText.cpMin;
+			}
+			else if (find.chrgText.cpMax < visibleRange->cpMin) {
+				score = visibleRange->cpMin - find.chrgText.cpMax;
+			}
+			else if (find.chrgText.cpMin > visibleRange->cpMax) {
+				score = find.chrgText.cpMin - visibleRange->cpMax;
+			}
+			else {
+				score = 0;
+			}
+			if (visibleOnly && score != 0) {
+				continue;
+			}
+			if (bestIndex < 0 || score < bestScore || (score == bestScore && find.chrgText.cpMin < bestFind.chrgText.cpMin)) {
+				bestIndex = scanIndex;
+				bestScore = score;
+				bestFind = find;
+			}
+		}
+
+		if (bestIndex < 0) {
+			break;
+		}
+
+		{
+			unsigned char* pngBytes = NULL;
+			size_t pngLength = 0;
+			LONG widthPx = 0;
+			LONG heightPx = 0;
+			IStream* imageStream = NULL;
+			RICHEDIT_IMAGE_PARAMETERS imageParams;
+
+			if (!CreatePngBytesAndSizeFromUtf8Source(doc->images[bestIndex].pathUtf8, &pngBytes, &pngLength, &widthPx, &heightPx)) {
+				insertedFlags[bestIndex] = TRUE;
+				insertedThisPass++;
+				continue;
+			}
+			if (!CreateReadOnlyStreamFromBytes(pngBytes, pngLength, &imageStream)) {
+				free(pngBytes);
+				insertedFlags[bestIndex] = TRUE;
+				insertedThisPass++;
+				continue;
+			}
+			free(pngBytes);
+
+			SendMessageW(hwnd, EM_EXSETSEL, 0, (LPARAM)&bestFind.chrgText);
+			SendMessageW(hwnd, EM_REPLACESEL, FALSE, (LPARAM)L"");
+			ZeroMemory(&imageParams, sizeof(imageParams));
+			imageParams.xWidth = (widthPx * 2540) / 96;
+			imageParams.yHeight = (heightPx * 2540) / 96;
+			imageParams.Ascent = 0;
+			imageParams.Type = TA_BASELINE;
+			imageParams.pwszAlternateText = L"";
+			imageParams.pIStream = imageStream;
+			SendMessageW(hwnd, EM_INSERTIMAGE, 0, (LPARAM)&imageParams);
+			imageStream->lpVtbl->Release(imageStream);
+			insertedFlags[bestIndex] = TRUE;
+			insertedThisPass++;
+		}
+	}
+
+	SendMessageW(hwnd, EM_SETREADONLY, TRUE, 0);
+	return TRUE;
+}
+
+static BOOL
+RenderIntoRichEdit(HWND hwnd, const RenderedDocument* doc)
+{
+	BOOL* insertedFlags = NULL;
+	VisibleCharRange visibleRange;
+
+	if (doc == NULL) {
+		return FALSE;
+	}
+	SetRichEditRtf(hwnd, doc->rtf);
+	if (doc->imageCount <= 0) {
+		return TRUE;
+	}
+
+	insertedFlags = (BOOL*)calloc((size_t)doc->imageCount, sizeof(BOOL));
+	if (insertedFlags == NULL) {
+		return FALSE;
+	}
+	visibleRange = GetVisibleCharRange(hwnd);
+	InsertPendingImagesInRange(hwnd, doc, &visibleRange, FALSE, insertedFlags);
+	free(insertedFlags);
+	InvalidateRect(hwnd, NULL, TRUE);
+	UpdateWindow(hwnd);
+	return TRUE;
 }
 
 static BOOL
@@ -1379,13 +2030,14 @@ RenderThreadProc(LPVOID lpParam)
 	UNREFERENCED_PARAMETER(lpParam);
 	while (!g_exitThreads) {
 		RenderSnapshot snapshot;
-		char* rtf;
 		WaitForSingleObject(g_renderEvent, INFINITE);
 		if (g_exitThreads) break;
 		if (!BuildRenderSnapshot(&snapshot)) continue;
-		rtf = markdown2rtf(snapshot.markdown, snapshot.imagePath);
-		if (rtf != NULL) {
-			PostMessage(hMainWindow, WM_APP_RENDER_COMPLETE, (WPARAM)rtf, (LPARAM)snapshot.generation);
+		{
+			RenderedDocument* rendered = RenderMarkdownDocument(snapshot.markdown, snapshot.imagePath, 1);
+			if (rendered != NULL) {
+				PostMessage(hMainWindow, WM_APP_RENDER_COMPLETE, (WPARAM)rendered, (LPARAM)snapshot.generation);
+			}
 		}
 		FreeRenderSnapshot(&snapshot);
 	}
