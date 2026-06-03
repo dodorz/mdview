@@ -16,8 +16,10 @@
 #include <stdarg.h>
 #include <initguid.h>
 #include <wincodec.h>
+#include <winhttp.h>
 
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "winhttp.lib")
 
 #include "Resource.h"
 #include "viewer_common.h"
@@ -80,6 +82,12 @@ typedef struct {
 	size_t offset;
 } RtfStreamContext;
 
+typedef struct {
+	LONG cpMin;
+	LONG cpMax;
+	BOOL valid;
+} VisibleCharRange;
+
 static const DWORD ESC_DOUBLE_PRESS_INTERVAL_MS = 600;
 static ULONGLONG g_lastEscPressTimestamp = 0;
 
@@ -97,6 +105,8 @@ static RenderedDocument* RenderMarkdownDocument(const char* markdown, const char
 static void FreeRenderedDocument(RenderedDocument* doc);
 static BOOL InsertPendingImages(HWND hwnd, const RenderedDocument* doc);
 static void AppendDebugLog(const char* format, ...);
+static BOOL IsHttpUrl(const char* value);
+static VisibleCharRange GetVisibleCharRange(HWND hwnd);
 
 int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nCmdShow)
 {
@@ -588,6 +598,7 @@ SetRichEditRtf(HWND hwnd, const char* rtfText)
 {
 	EDITSTREAM stream;
 	RtfStreamContext ctx;
+	CHARRANGE allText;
 	const char* safeRtf = rtfText != NULL ? rtfText : "{\\rtf1\\ansi }";
 
 	ctx.data = safeRtf;
@@ -597,15 +608,59 @@ SetRichEditRtf(HWND hwnd, const char* rtfText)
 	ZeroMemory(&stream, sizeof(stream));
 	stream.dwCookie = (DWORD_PTR)&ctx;
 	stream.pfnCallback = RichEditStreamInCallback;
+	allText.cpMin = 0;
+	allText.cpMax = -1;
 
 	SendMessage(hwnd, WM_SETREDRAW, FALSE, 0);
 	SendMessage(hwnd, EM_SETUNDOLIMIT, 0, 0);
-	SendMessage(hwnd, EM_STREAMIN, (WPARAM)(SF_RTF | SF_USECODEPAGE | (CP_UTF8 << 16)), (LPARAM)&stream);
+	SendMessageW(hwnd, EM_EXSETSEL, 0, (LPARAM)&allText);
+	SendMessage(hwnd, EM_STREAMIN, (WPARAM)(SF_RTF | SFF_SELECTION | SF_USECODEPAGE | (CP_UTF8 << 16)), (LPARAM)&stream);
 	SendMessage(hwnd, WM_SETREDRAW, TRUE, 0);
 	InvalidateRect(hwnd, NULL, TRUE);
 	UpdateWindow(hwnd);
 
 	return stream.dwError == 0;
+}
+
+static VisibleCharRange
+GetVisibleCharRange(HWND hwnd)
+{
+	VisibleCharRange range;
+	POINTL topPoint;
+	POINTL bottomPoint;
+	RECT rect;
+	LRESULT topChar;
+	LRESULT bottomChar;
+
+	range.cpMin = 0;
+	range.cpMax = 0;
+	range.valid = FALSE;
+
+	if (hwnd == NULL)
+		return range;
+
+	if (!GetClientRect(hwnd, &rect))
+		return range;
+
+	topPoint.x = rect.left + 4;
+	topPoint.y = rect.top + 4;
+	bottomPoint.x = rect.left + 4;
+	bottomPoint.y = rect.bottom > 8 ? rect.bottom - 8 : rect.bottom;
+
+	topChar = SendMessageW(hwnd, EM_CHARFROMPOS, 0, (LPARAM)&topPoint);
+	bottomChar = SendMessageW(hwnd, EM_CHARFROMPOS, 0, (LPARAM)&bottomPoint);
+	if (topChar < 0 || bottomChar < 0)
+		return range;
+
+	range.cpMin = (LONG)topChar;
+	range.cpMax = (LONG)bottomChar;
+	if (range.cpMax < range.cpMin) {
+		LONG temp = range.cpMin;
+		range.cpMin = range.cpMax;
+		range.cpMax = temp;
+	}
+	range.valid = TRUE;
+	return range;
 }
 
 static unsigned int
@@ -614,7 +669,15 @@ ReadBe32(const unsigned char* data)
 	return ((unsigned int)data[0] << 24) |
 		((unsigned int)data[1] << 16) |
 		((unsigned int)data[2] << 8) |
-		(unsigned int)data[3];
+	(unsigned int)data[3];
+}
+
+static BOOL
+IsHttpUrl(const char* value)
+{
+	if (value == NULL)
+		return FALSE;
+	return _strnicmp(value, "http://", 7) == 0 || _strnicmp(value, "https://", 8) == 0;
 }
 
 static int
@@ -635,6 +698,165 @@ GetImageFormatFromPathUtf8(const char* pathUtf8)
 	if (strcmp(lowerExt, ".jpg") == 0 || strcmp(lowerExt, ".jpeg") == 0)
 		return 2;
 	return 0;
+}
+
+static BOOL
+CreateReadOnlyStreamFromBytes(const unsigned char* data, size_t length, IStream** streamOut)
+{
+	HGLOBAL globalData = NULL;
+	void* memory = NULL;
+	IStream* stream = NULL;
+
+	*streamOut = NULL;
+	globalData = GlobalAlloc(GMEM_MOVEABLE, length == 0 ? 1 : length);
+	if (globalData == NULL)
+		goto cleanup;
+
+	memory = GlobalLock(globalData);
+	if (memory == NULL)
+		goto cleanup;
+	if (length > 0)
+		memcpy(memory, data, length);
+	GlobalUnlock(globalData);
+	memory = NULL;
+
+	if (FAILED(CreateStreamOnHGlobal(globalData, TRUE, &stream)) || stream == NULL)
+		goto cleanup;
+
+	*streamOut = stream;
+	stream = NULL;
+	globalData = NULL;
+	return TRUE;
+
+cleanup:
+	if (memory != NULL)
+		GlobalUnlock(globalData);
+	if (stream != NULL)
+		stream->lpVtbl->Release(stream);
+	if (globalData != NULL)
+		GlobalFree(globalData);
+	return FALSE;
+}
+
+static BOOL
+DownloadUrlBytes(const char* url, unsigned char** dataOut, size_t* lengthOut)
+{
+	WCHAR urlW[2048];
+	URL_COMPONENTS components;
+	HINTERNET hSession = NULL;
+	HINTERNET hConnect = NULL;
+	HINTERNET hRequest = NULL;
+	WCHAR hostName[256];
+	WCHAR urlPath[2048];
+	DWORD flags = 0;
+	unsigned char* buffer = NULL;
+	size_t length = 0;
+
+	*dataOut = NULL;
+	*lengthOut = 0;
+
+	if (MultiByteToWideChar(CP_UTF8, 0, url, -1, urlW, _countof(urlW)) == 0) {
+		AppendDebugLog("DownloadUrlBytes: utf8->wide failed for %s", url);
+		return FALSE;
+	}
+
+	ZeroMemory(&components, sizeof(components));
+	components.dwStructSize = sizeof(components);
+	components.lpszHostName = hostName;
+	components.dwHostNameLength = _countof(hostName);
+	components.lpszUrlPath = urlPath;
+	components.dwUrlPathLength = _countof(urlPath);
+	components.dwSchemeLength = (DWORD)-1;
+
+	if (!WinHttpCrackUrl(urlW, 0, 0, &components)) {
+		AppendDebugLog("DownloadUrlBytes: WinHttpCrackUrl failed for %s", url);
+		goto cleanup;
+	}
+	if (components.nScheme == INTERNET_SCHEME_HTTPS)
+		flags |= WINHTTP_FLAG_SECURE;
+
+	hSession = WinHttpOpen(L"mdview/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+		WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+	if (hSession == NULL) {
+		AppendDebugLog("DownloadUrlBytes: WinHttpOpen failed for %s", url);
+		goto cleanup;
+	}
+	hConnect = WinHttpConnect(hSession, hostName, components.nPort, 0);
+	if (hConnect == NULL) {
+		AppendDebugLog("DownloadUrlBytes: WinHttpConnect failed for %s", url);
+		goto cleanup;
+	}
+	hRequest = WinHttpOpenRequest(hConnect, L"GET", urlPath, NULL,
+		WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+	if (hRequest == NULL) {
+		AppendDebugLog("DownloadUrlBytes: WinHttpOpenRequest failed for %s", url);
+		goto cleanup;
+	}
+	if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+		AppendDebugLog("DownloadUrlBytes: WinHttpSendRequest failed for %s", url);
+		goto cleanup;
+	}
+	if (!WinHttpReceiveResponse(hRequest, NULL)) {
+		AppendDebugLog("DownloadUrlBytes: WinHttpReceiveResponse failed for %s", url);
+		goto cleanup;
+	}
+
+	for (;;) {
+		DWORD available = 0;
+		DWORD bytesRead = 0;
+		unsigned char* newBuffer;
+
+		if (!WinHttpQueryDataAvailable(hRequest, &available)) {
+			AppendDebugLog("DownloadUrlBytes: WinHttpQueryDataAvailable failed for %s", url);
+			goto cleanup;
+		}
+		if (available == 0)
+			break;
+
+		newBuffer = (unsigned char*)realloc(buffer, length + available);
+		if (newBuffer == NULL)
+			goto cleanup;
+		buffer = newBuffer;
+
+		if (!WinHttpReadData(hRequest, buffer + length, available, &bytesRead)) {
+			AppendDebugLog("DownloadUrlBytes: WinHttpReadData failed for %s", url);
+			goto cleanup;
+		}
+		length += bytesRead;
+	}
+
+	*dataOut = buffer;
+	*lengthOut = length;
+	buffer = NULL;
+	AppendDebugLog("DownloadUrlBytes: downloaded %zu bytes from %s", length, url);
+
+cleanup:
+	if (buffer != NULL)
+		free(buffer);
+	if (hRequest != NULL)
+		WinHttpCloseHandle(hRequest);
+	if (hConnect != NULL)
+		WinHttpCloseHandle(hConnect);
+	if (hSession != NULL)
+		WinHttpCloseHandle(hSession);
+	return *dataOut != NULL;
+}
+
+static BOOL
+CreateInputStreamFromSourceUtf8(const char* sourceUtf8, IStream** streamOut)
+{
+	if (IsHttpUrl(sourceUtf8)) {
+		unsigned char* data = NULL;
+		size_t length = 0;
+		BOOL ok = DownloadUrlBytes(sourceUtf8, &data, &length) && CreateReadOnlyStreamFromBytes(data, length, streamOut);
+		if (!ok)
+			AppendDebugLog("CreateInputStreamFromSourceUtf8: failed for %s", sourceUtf8);
+		if (data != NULL)
+			free(data);
+		return ok;
+	}
+
+	return FALSE;
 }
 
 static BOOL
@@ -719,38 +941,86 @@ ReadJpegDimensions(FILE* file, LONG* widthPx, LONG* heightPx)
 }
 
 static BOOL
-GetImagePixelSizeFromUtf8Path(const char* pathUtf8, LONG* widthPx, LONG* heightPx)
+GetImagePixelSizeFromUtf8Source(const char* sourceUtf8, LONG* widthPx, LONG* heightPx)
 {
-	WCHAR pathW[MAX_PATH * 2];
 	FILE* file = NULL;
 	BOOL ok = FALSE;
 	int format;
+	IStream* stream = NULL;
+	IWICImagingFactory* factory = NULL;
+	IWICBitmapDecoder* decoder = NULL;
+	IWICBitmapFrameDecode* frame = NULL;
+	HRESULT hr;
+	WCHAR pathW[MAX_PATH * 2];
 
-	if (widthPx == NULL || heightPx == NULL || pathUtf8 == NULL)
+	if (widthPx == NULL || heightPx == NULL || sourceUtf8 == NULL)
 		return FALSE;
 	*widthPx = 0;
 	*heightPx = 0;
 
-	format = GetImageFormatFromPathUtf8(pathUtf8);
-	if (format == 0)
-		return FALSE;
+	if (IsHttpUrl(sourceUtf8)) {
+		hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
+			&IID_IWICImagingFactory, (void**)&factory);
+		if (FAILED(hr) || factory == NULL)
+			goto cleanup;
+		if (!CreateInputStreamFromSourceUtf8(sourceUtf8, &stream))
+			goto cleanup;
+		hr = factory->lpVtbl->CreateDecoderFromStream(factory, stream, NULL,
+			WICDecodeMetadataCacheOnLoad, &decoder);
+		if (FAILED(hr) || decoder == NULL) {
+			AppendDebugLog("GetImagePixelSizeFromUtf8Source: CreateDecoderFromStream failed hr=0x%08lx for %s", (unsigned long)hr, sourceUtf8);
+			goto cleanup;
+		}
+		hr = decoder->lpVtbl->GetFrame(decoder, 0, &frame);
+		if (FAILED(hr) || frame == NULL) {
+			AppendDebugLog("GetImagePixelSizeFromUtf8Source: GetFrame failed hr=0x%08lx for %s", (unsigned long)hr, sourceUtf8);
+			goto cleanup;
+		}
+		{
+			UINT width = 0;
+			UINT height = 0;
+			hr = frame->lpVtbl->GetSize(frame, &width, &height);
+			if (FAILED(hr)) {
+				AppendDebugLog("GetImagePixelSizeFromUtf8Source: GetSize failed hr=0x%08lx for %s", (unsigned long)hr, sourceUtf8);
+				goto cleanup;
+			}
+			*widthPx = (LONG)width;
+			*heightPx = (LONG)height;
+			ok = *widthPx > 0 && *heightPx > 0;
+		}
+		goto cleanup;
+	}
 
-	if (MultiByteToWideChar(CP_UTF8, 0, pathUtf8, -1, pathW, _countof(pathW)) == 0)
-		return FALSE;
+	format = GetImageFormatFromPathUtf8(sourceUtf8);
+	if (format == 0)
+		goto cleanup;
+
+	if (MultiByteToWideChar(CP_UTF8, 0, sourceUtf8, -1, pathW, _countof(pathW)) == 0)
+		goto cleanup;
 	if (_wfopen_s(&file, pathW, L"rb") != 0 || file == NULL)
-		return FALSE;
+		goto cleanup;
 
 	if (format == 1)
 		ok = ReadPngDimensions(file, widthPx, heightPx);
 	else if (format == 2)
 		ok = ReadJpegDimensions(file, widthPx, heightPx);
 
-	fclose(file);
+cleanup:
+	if (file != NULL)
+		fclose(file);
+	if (frame != NULL)
+		frame->lpVtbl->Release(frame);
+	if (decoder != NULL)
+		decoder->lpVtbl->Release(decoder);
+	if (factory != NULL)
+		factory->lpVtbl->Release(factory);
+	if (stream != NULL)
+		stream->lpVtbl->Release(stream);
 	return ok;
 }
 
 static BOOL
-CreatePngStreamFromUtf8File(const char* pathUtf8, IStream** streamOut)
+CreatePngStreamFromUtf8Source(const char* sourceUtf8, IStream** streamOut)
 {
 	WCHAR pathW[MAX_PATH * 2];
 	IWICImagingFactory* factory = NULL;
@@ -760,36 +1030,51 @@ CreatePngStreamFromUtf8File(const char* pathUtf8, IStream** streamOut)
 	IWICBitmapEncoder* encoder = NULL;
 	IWICBitmapFrameEncode* encodeFrame = NULL;
 	IPropertyBag2* propertyBag = NULL;
-	IStream* stream = NULL;
+	IStream* inputStream = NULL;
+	IStream* outputStream = NULL;
 	HRESULT hr;
 
 	*streamOut = NULL;
-	if (MultiByteToWideChar(CP_UTF8, 0, pathUtf8, -1, pathW, _countof(pathW)) == 0)
-		return FALSE;
 
 	hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
 		&IID_IWICImagingFactory, (void**)&factory);
 	if (FAILED(hr) || factory == NULL)
 		goto cleanup;
 
-	hr = factory->lpVtbl->CreateDecoderFromFilename(factory, pathW, NULL, GENERIC_READ,
-		WICDecodeMetadataCacheOnLoad, &decoder);
-	if (FAILED(hr) || decoder == NULL)
-		goto cleanup;
+	if (IsHttpUrl(sourceUtf8)) {
+		if (!CreateInputStreamFromSourceUtf8(sourceUtf8, &inputStream))
+			goto cleanup;
+		hr = factory->lpVtbl->CreateDecoderFromStream(factory, inputStream, NULL,
+			WICDecodeMetadataCacheOnLoad, &decoder);
+		if (FAILED(hr) || decoder == NULL) {
+			AppendDebugLog("CreatePngStreamFromUtf8Source: CreateDecoderFromStream failed hr=0x%08lx for %s", (unsigned long)hr, sourceUtf8);
+			goto cleanup;
+		}
+	}
+	else {
+		if (MultiByteToWideChar(CP_UTF8, 0, sourceUtf8, -1, pathW, _countof(pathW)) == 0)
+			goto cleanup;
+		hr = factory->lpVtbl->CreateDecoderFromFilename(factory, pathW, NULL, GENERIC_READ,
+			WICDecodeMetadataCacheOnLoad, &decoder);
+		if (FAILED(hr) || decoder == NULL)
+			goto cleanup;
+	}
 
 	hr = decoder->lpVtbl->GetFrame(decoder, 0, &frame);
 	if (FAILED(hr) || frame == NULL)
 		goto cleanup;
 
-	hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
-	if (FAILED(hr) || stream == NULL)
-		goto cleanup;
+	{
+		hr = CreateStreamOnHGlobal(NULL, TRUE, &outputStream);
+		if (FAILED(hr) || outputStream == NULL)
+			goto cleanup;
+	}
 
 	hr = factory->lpVtbl->CreateStream(factory, &wicStream);
 	if (FAILED(hr) || wicStream == NULL)
 		goto cleanup;
 
-	hr = wicStream->lpVtbl->InitializeFromIStream(wicStream, stream);
+	hr = wicStream->lpVtbl->InitializeFromIStream(wicStream, outputStream);
 	if (FAILED(hr))
 		goto cleanup;
 
@@ -843,13 +1128,13 @@ CreatePngStreamFromUtf8File(const char* pathUtf8, IStream** streamOut)
 	{
 		LARGE_INTEGER zero;
 		zero.QuadPart = 0;
-		hr = stream->lpVtbl->Seek(stream, zero, STREAM_SEEK_SET, NULL);
+		hr = outputStream->lpVtbl->Seek(outputStream, zero, STREAM_SEEK_SET, NULL);
 		if (FAILED(hr))
 			goto cleanup;
 	}
 
-	*streamOut = stream;
-	stream = NULL;
+	*streamOut = outputStream;
+	outputStream = NULL;
 
 cleanup:
 	if (propertyBag != NULL)
@@ -866,8 +1151,167 @@ cleanup:
 		decoder->lpVtbl->Release(decoder);
 	if (factory != NULL)
 		factory->lpVtbl->Release(factory);
-	if (stream != NULL)
-		stream->lpVtbl->Release(stream);
+	if (inputStream != NULL)
+		inputStream->lpVtbl->Release(inputStream);
+	if (outputStream != NULL)
+		outputStream->lpVtbl->Release(outputStream);
+	return *streamOut != NULL;
+}
+
+static BOOL
+CreatePngStreamAndSizeFromUtf8Source(const char* sourceUtf8, IStream** streamOut, LONG* widthPx, LONG* heightPx)
+{
+	WCHAR pathW[MAX_PATH * 2];
+	IWICImagingFactory* factory = NULL;
+	IWICBitmapDecoder* decoder = NULL;
+	IWICBitmapFrameDecode* frame = NULL;
+	IWICStream* wicStream = NULL;
+	IWICBitmapEncoder* encoder = NULL;
+	IWICBitmapFrameEncode* encodeFrame = NULL;
+	IPropertyBag2* propertyBag = NULL;
+	IStream* inputStream = NULL;
+	IStream* outputStream = NULL;
+	HRESULT hr;
+
+	*streamOut = NULL;
+	if (widthPx != NULL)
+		*widthPx = 0;
+	if (heightPx != NULL)
+		*heightPx = 0;
+
+	hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
+		&IID_IWICImagingFactory, (void**)&factory);
+	if (FAILED(hr) || factory == NULL)
+		goto cleanup;
+
+	if (IsHttpUrl(sourceUtf8)) {
+		if (!CreateInputStreamFromSourceUtf8(sourceUtf8, &inputStream))
+			goto cleanup;
+		hr = factory->lpVtbl->CreateDecoderFromStream(factory, inputStream, NULL,
+			WICDecodeMetadataCacheOnLoad, &decoder);
+		if (FAILED(hr) || decoder == NULL) {
+			AppendDebugLog("CreatePngStreamAndSizeFromUtf8Source: CreateDecoderFromStream failed hr=0x%08lx for %s", (unsigned long)hr, sourceUtf8);
+			goto cleanup;
+		}
+	}
+	else {
+		if (MultiByteToWideChar(CP_UTF8, 0, sourceUtf8, -1, pathW, _countof(pathW)) == 0)
+			goto cleanup;
+		hr = factory->lpVtbl->CreateDecoderFromFilename(factory, pathW, NULL, GENERIC_READ,
+			WICDecodeMetadataCacheOnLoad, &decoder);
+		if (FAILED(hr) || decoder == NULL)
+			goto cleanup;
+	}
+
+	hr = decoder->lpVtbl->GetFrame(decoder, 0, &frame);
+	if (FAILED(hr) || frame == NULL)
+		goto cleanup;
+
+	if (widthPx != NULL || heightPx != NULL) {
+		UINT width = 0;
+		UINT height = 0;
+		hr = frame->lpVtbl->GetSize(frame, &width, &height);
+		if (FAILED(hr)) {
+			AppendDebugLog("CreatePngStreamAndSizeFromUtf8Source: GetSize failed hr=0x%08lx for %s", (unsigned long)hr, sourceUtf8);
+			goto cleanup;
+		}
+		if (widthPx != NULL)
+			*widthPx = (LONG)width;
+		if (heightPx != NULL)
+			*heightPx = (LONG)height;
+	}
+
+	hr = CreateStreamOnHGlobal(NULL, TRUE, &outputStream);
+	if (FAILED(hr) || outputStream == NULL)
+		goto cleanup;
+
+	hr = factory->lpVtbl->CreateStream(factory, &wicStream);
+	if (FAILED(hr) || wicStream == NULL)
+		goto cleanup;
+
+	hr = wicStream->lpVtbl->InitializeFromIStream(wicStream, outputStream);
+	if (FAILED(hr))
+		goto cleanup;
+
+	hr = factory->lpVtbl->CreateEncoder(factory, &GUID_ContainerFormatPng, NULL, &encoder);
+	if (FAILED(hr) || encoder == NULL)
+		goto cleanup;
+
+	hr = encoder->lpVtbl->Initialize(encoder, (IStream*)wicStream, WICBitmapEncoderNoCache);
+	if (FAILED(hr))
+		goto cleanup;
+
+	hr = encoder->lpVtbl->CreateNewFrame(encoder, &encodeFrame, &propertyBag);
+	if (FAILED(hr) || encodeFrame == NULL)
+		goto cleanup;
+
+	hr = encodeFrame->lpVtbl->Initialize(encodeFrame, propertyBag);
+	if (FAILED(hr))
+		goto cleanup;
+
+	if (widthPx != NULL && heightPx != NULL && *widthPx > 0 && *heightPx > 0) {
+		hr = encodeFrame->lpVtbl->SetSize(encodeFrame, (UINT)*widthPx, (UINT)*heightPx);
+		if (FAILED(hr))
+			goto cleanup;
+	}
+	else {
+		UINT width = 0;
+		UINT height = 0;
+		hr = frame->lpVtbl->GetSize(frame, &width, &height);
+		if (FAILED(hr))
+			goto cleanup;
+		hr = encodeFrame->lpVtbl->SetSize(encodeFrame, width, height);
+		if (FAILED(hr))
+			goto cleanup;
+	}
+
+	{
+		WICPixelFormatGUID pixelFormat = GUID_WICPixelFormatDontCare;
+		hr = encodeFrame->lpVtbl->SetPixelFormat(encodeFrame, &pixelFormat);
+		if (FAILED(hr))
+			goto cleanup;
+	}
+
+	hr = encodeFrame->lpVtbl->WriteSource(encodeFrame, (IWICBitmapSource*)frame, NULL);
+	if (FAILED(hr))
+		goto cleanup;
+	hr = encodeFrame->lpVtbl->Commit(encodeFrame);
+	if (FAILED(hr))
+		goto cleanup;
+	hr = encoder->lpVtbl->Commit(encoder);
+	if (FAILED(hr))
+		goto cleanup;
+
+	{
+		LARGE_INTEGER zero;
+		zero.QuadPart = 0;
+		hr = outputStream->lpVtbl->Seek(outputStream, zero, STREAM_SEEK_SET, NULL);
+		if (FAILED(hr))
+			goto cleanup;
+	}
+
+	*streamOut = outputStream;
+	outputStream = NULL;
+
+cleanup:
+	if (propertyBag != NULL)
+		propertyBag->lpVtbl->Release(propertyBag);
+	if (encodeFrame != NULL)
+		encodeFrame->lpVtbl->Release(encodeFrame);
+	if (encoder != NULL)
+		encoder->lpVtbl->Release(encoder);
+	if (wicStream != NULL)
+		wicStream->lpVtbl->Release(wicStream);
+	if (frame != NULL)
+		frame->lpVtbl->Release(frame);
+	if (decoder != NULL)
+		decoder->lpVtbl->Release(decoder);
+	if (factory != NULL)
+		factory->lpVtbl->Release(factory);
+	if (inputStream != NULL)
+		inputStream->lpVtbl->Release(inputStream);
+	if (outputStream != NULL)
+		outputStream->lpVtbl->Release(outputStream);
 	return *streamOut != NULL;
 }
 
@@ -932,72 +1376,124 @@ FreeRenderedDocument(RenderedDocument* doc)
 static BOOL
 InsertPendingImages(HWND hwnd, const RenderedDocument* doc)
 {
-	int i;
+	int remainingCount;
+	BOOL* inserted;
+	VisibleCharRange visibleRange;
 	AppendDebugLog("InsertPendingImages start: count=%d", doc ? doc->imageCount : -1);
 
 	if (doc == NULL || doc->imageCount <= 0)
 		return TRUE;
 
+	inserted = (BOOL*)calloc((size_t)doc->imageCount, sizeof(BOOL));
+	if (inserted == NULL)
+		return FALSE;
+
 	SendMessageW(hwnd, EM_SETREADONLY, FALSE, 0);
+	visibleRange = GetVisibleCharRange(hwnd);
+	AppendDebugLog("InsertPendingImages visible range: valid=%d cpMin=%ld cpMax=%ld",
+		visibleRange.valid ? 1 : 0, (long)visibleRange.cpMin, (long)visibleRange.cpMax);
+	remainingCount = doc->imageCount;
 
-	for (i = 0; i < doc->imageCount; ++i) {
-		FINDTEXTEXW find;
-		CHARRANGE range;
-		WCHAR markerW[128];
-		LONG widthPx = 0;
-		LONG heightPx = 0;
-		IStream* imageStream = NULL;
-		RICHEDIT_IMAGE_PARAMETERS imageParams;
+	while (remainingCount > 0) {
+		int bestIndex = -1;
+		LONG bestScore = LONG_MAX;
+		FINDTEXTEXW bestFind;
+		int i;
 
-		if (doc->images[i].markerUtf8 == NULL || doc->images[i].pathUtf8 == NULL)
-			continue;
-		AppendDebugLog("Image[%d]: marker=%s path=%s", i, doc->images[i].markerUtf8, doc->images[i].pathUtf8);
-		if (MultiByteToWideChar(CP_UTF8, 0, doc->images[i].markerUtf8, -1, markerW, _countof(markerW)) == 0)
-		{
-			AppendDebugLog("Image[%d]: marker utf8->wide failed", i);
-			continue;
-		}
-		if (!GetImagePixelSizeFromUtf8Path(doc->images[i].pathUtf8, &widthPx, &heightPx))
-		{
-			AppendDebugLog("Image[%d]: size read failed", i);
-			continue;
-		}
-		if (!CreatePngStreamFromUtf8File(doc->images[i].pathUtf8, &imageStream))
-		{
-			AppendDebugLog("Image[%d]: png stream creation failed", i);
-			continue;
-		}
-		AppendDebugLog("Image[%d]: size=%ldx%ld", i, (long)widthPx, (long)heightPx);
+		ZeroMemory(&bestFind, sizeof(bestFind));
 
-		range.cpMin = 0;
-		range.cpMax = -1;
-		find.chrg = range;
-		find.lpstrText = markerW;
-		if (SendMessageW(hwnd, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&find) == -1) {
-			AppendDebugLog("Image[%d]: marker not found in RichEdit text", i);
+		for (i = 0; i < doc->imageCount; ++i) {
+			FINDTEXTEXW find;
+			CHARRANGE range;
+			WCHAR markerW[128];
+			LONG score;
+
+			if (inserted[i] || doc->images[i].markerUtf8 == NULL || doc->images[i].pathUtf8 == NULL)
+				continue;
+			if (MultiByteToWideChar(CP_UTF8, 0, doc->images[i].markerUtf8, -1, markerW, _countof(markerW)) == 0)
+				continue;
+
+			range.cpMin = 0;
+			range.cpMax = -1;
+			find.chrg = range;
+			find.lpstrText = markerW;
+			if (SendMessageW(hwnd, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&find) == -1)
+				continue;
+
+			if (!visibleRange.valid) {
+				score = find.chrgText.cpMin;
+			}
+			else if (find.chrgText.cpMax < visibleRange.cpMin) {
+				score = visibleRange.cpMin - find.chrgText.cpMax;
+			}
+			else if (find.chrgText.cpMin > visibleRange.cpMax) {
+				score = find.chrgText.cpMin - visibleRange.cpMax;
+			}
+			else {
+				score = 0;
+			}
+
+			if (bestIndex < 0 || score < bestScore || (score == bestScore && find.chrgText.cpMin < bestFind.chrgText.cpMin)) {
+				bestIndex = i;
+				bestScore = score;
+				bestFind = find;
+			}
+		}
+
+		if (bestIndex < 0)
+			break;
+
+		{
+			LONG widthPx = 0;
+			LONG heightPx = 0;
+			IStream* imageStream = NULL;
+			RICHEDIT_IMAGE_PARAMETERS imageParams;
+
+			AppendDebugLog("Image[%d]: marker=%s path=%s score=%ld cpMin=%ld cpMax=%ld",
+				bestIndex,
+				doc->images[bestIndex].markerUtf8,
+				doc->images[bestIndex].pathUtf8,
+				(long)bestScore,
+				(long)bestFind.chrgText.cpMin,
+				(long)bestFind.chrgText.cpMax);
+
+			if (!CreatePngStreamAndSizeFromUtf8Source(doc->images[bestIndex].pathUtf8, &imageStream, &widthPx, &heightPx)) {
+				AppendDebugLog("Image[%d]: png stream/size creation failed", bestIndex);
+				inserted[bestIndex] = TRUE;
+				remainingCount--;
+				continue;
+			}
+
+			AppendDebugLog("Image[%d]: size=%ldx%ld", bestIndex, (long)widthPx, (long)heightPx);
+
+			SendMessageW(hwnd, EM_EXSETSEL, 0, (LPARAM)&bestFind.chrgText);
+			SendMessageW(hwnd, EM_REPLACESEL, FALSE, (LPARAM)L"");
+
+			ZeroMemory(&imageParams, sizeof(imageParams));
+			imageParams.xWidth = (widthPx * 2540) / 96;
+			imageParams.yHeight = (heightPx * 2540) / 96;
+			imageParams.Ascent = 0;
+			imageParams.Type = TA_BASELINE;
+			imageParams.pwszAlternateText = L"";
+			imageParams.pIStream = imageStream;
+			{
+				LRESULT hr = SendMessageW(hwnd, EM_INSERTIMAGE, 0, (LPARAM)&imageParams);
+				AppendDebugLog("Image[%d]: EM_INSERTIMAGE hr=0x%08lx", bestIndex, (unsigned long)hr);
+			}
 			imageStream->lpVtbl->Release(imageStream);
-			continue;
-		}
-		AppendDebugLog("Image[%d]: marker found cpMin=%ld cpMax=%ld", i, (long)find.chrgText.cpMin, (long)find.chrgText.cpMax);
+			inserted[bestIndex] = TRUE;
+			remainingCount--;
 
-		SendMessageW(hwnd, EM_EXSETSEL, 0, (LPARAM)&find.chrgText);
-		SendMessageW(hwnd, EM_REPLACESEL, FALSE, (LPARAM)L"");
-
-		ZeroMemory(&imageParams, sizeof(imageParams));
-		imageParams.xWidth = (widthPx * 2540) / 96;
-		imageParams.yHeight = (heightPx * 2540) / 96;
-		imageParams.Ascent = 0;
-		imageParams.Type = TA_BASELINE;
-		imageParams.pwszAlternateText = L"";
-		imageParams.pIStream = imageStream;
-		{
-			LRESULT hr = SendMessageW(hwnd, EM_INSERTIMAGE, 0, (LPARAM)&imageParams);
-			AppendDebugLog("Image[%d]: EM_INSERTIMAGE hr=0x%08lx", i, (unsigned long)hr);
+			if (bestScore == 0) {
+				RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+			}
 		}
-		imageStream->lpVtbl->Release(imageStream);
 	}
 
 	SendMessageW(hwnd, EM_SETREADONLY, TRUE, 0);
+	InvalidateRect(hwnd, NULL, TRUE);
+	UpdateWindow(hwnd);
+	free(inserted);
 
 	return TRUE;
 }

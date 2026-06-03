@@ -570,13 +570,18 @@ append_image(const char* file_name)
 	if (!embed_images)
 		return;
 
-	int img_format = get_image_format_from_reference(file_name);
-	if (img_format == 0)
-		return;  // Unsupported format
-
-	if (!is_http_url(file_name)) {
+	{
 		char marker[64];
-		char* resolved_path = resolve_local_image_path_utf8(file_name);
+		char* resolved_path;
+
+		if (is_http_url(file_name))
+			resolved_path = _strdup(file_name);
+		else {
+			int img_format = get_image_format_from_reference(file_name);
+			if (img_format == 0)
+				return;  // Unsupported local format
+			resolved_path = resolve_local_image_path_utf8(file_name);
+		}
 
 		if (resolved_path == NULL)
 			return;
