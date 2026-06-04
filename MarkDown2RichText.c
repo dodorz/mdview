@@ -976,6 +976,52 @@ static __declspec(thread) int sup_state = 0;
 static __declspec(thread) int sub_state = 0;
 static __declspec(thread) int html_u_state = 0;
 
+static int
+has_closing_single_emphasis(const char* p, char marker)
+{
+	const char* q;
+
+	if (!p || *p != marker || *(p + 1) == marker)
+		return 0;
+
+	q = p + 1;
+	while (*q) {
+		if (*q == '\\' && *(q + 1) != 0) {
+			q += 2;
+			continue;
+		}
+		if (*q == marker && *(q + 1) == marker) {
+			q += 2;
+			continue;
+		}
+		if (*q == marker)
+			return 1;
+		q++;
+	}
+	return 0;
+}
+
+static int
+has_closing_double_emphasis(const char* p, char marker)
+{
+	const char* q;
+
+	if (!p || p[0] != marker || p[1] != marker || p[2] == marker)
+		return 0;
+
+	q = p + 2;
+	while (*q) {
+		if (*q == '\\' && *(q + 1) != 0) {
+			q += 2;
+			continue;
+		}
+		if (q[0] == marker && q[1] == marker && q[2] != marker)
+			return 1;
+		q++;
+	}
+	return 0;
+}
+
 // Only treat a single '~' as subscript delimiter if it can be closed later in the same line.
 // This prevents common range expressions like "50°~115°" from enabling subscript until EOF.
 static int
@@ -1380,6 +1426,11 @@ append_buffer_line(char* line)
 
 		if ((strncmp(pos, "**", 2) == 0 && strncmp(pos + 2, "*", 1) != 0) ||
 			(strncmp(pos, "__", 2) == 0 && strncmp(pos + 2, "_", 1) != 0)) {
+			if (!bold_state && !has_closing_double_emphasis(pos, *pos)) {
+				append_rtf_char(*pos);
+				pos++;
+				continue;
+			}
 			*pos = 0;
 			if (bold_state) {
 				append_buffer("\\b0 ");
@@ -1395,6 +1446,11 @@ append_buffer_line(char* line)
 
 		if ((strncmp(pos, "*", 1) == 0 && strncmp(pos + 1, "*", 1) != 0) ||
 			(strncmp(pos, "_", 1) == 0 && strncmp(pos + 1, "_", 1) != 0)) {
+			if (!italic_state && !has_closing_single_emphasis(pos, *pos)) {
+				append_rtf_char(*pos);
+				pos++;
+				continue;
+			}
 			*pos = 0;
 			if (italic_state) {
 				append_buffer("\\i0 ");
