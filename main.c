@@ -107,6 +107,8 @@ static BOOL InsertPendingImages(HWND hwnd, const RenderedDocument* doc);
 static void AppendDebugLog(const char* format, ...);
 static BOOL IsHttpUrl(const char* value);
 static VisibleCharRange GetVisibleCharRange(HWND hwnd);
+static LONG GetRichEditContentWidthPx(HWND hwnd);
+static void ScaleImageToFitWidthPx(LONG* widthPx, LONG* heightPx, LONG maxWidthPx);
 
 int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nCmdShow)
 {
@@ -661,6 +663,43 @@ GetVisibleCharRange(HWND hwnd)
 	}
 	range.valid = TRUE;
 	return range;
+}
+
+static LONG
+GetRichEditContentWidthPx(HWND hwnd)
+{
+	RECT rect;
+	RECT clientRect;
+
+	if (hwnd == NULL)
+		return 0;
+
+	ZeroMemory(&rect, sizeof(rect));
+	SendMessageW(hwnd, EM_GETRECT, 0, (LPARAM)&rect);
+	if (rect.right > rect.left)
+		return rect.right - rect.left;
+
+	if (!GetClientRect(hwnd, &clientRect))
+		return 0;
+	if (clientRect.right - clientRect.left <= (MARGIN * 2))
+		return clientRect.right - clientRect.left;
+	return (clientRect.right - clientRect.left) - (MARGIN * 2);
+}
+
+static void
+ScaleImageToFitWidthPx(LONG* widthPx, LONG* heightPx, LONG maxWidthPx)
+{
+	if (widthPx == NULL || heightPx == NULL)
+		return;
+	if (*widthPx <= 0 || *heightPx <= 0 || maxWidthPx <= 0)
+		return;
+	if (*widthPx <= maxWidthPx)
+		return;
+
+	*heightPx = (LONG)(((LONGLONG)*heightPx * (LONGLONG)maxWidthPx) / (LONGLONG)*widthPx);
+	*widthPx = maxWidthPx;
+	if (*heightPx <= 0)
+		*heightPx = 1;
 }
 
 static unsigned int
@@ -1446,6 +1485,7 @@ InsertPendingImages(HWND hwnd, const RenderedDocument* doc)
 		{
 			LONG widthPx = 0;
 			LONG heightPx = 0;
+			LONG maxWidthPx = 0;
 			IStream* imageStream = NULL;
 			RICHEDIT_IMAGE_PARAMETERS imageParams;
 
@@ -1465,6 +1505,9 @@ InsertPendingImages(HWND hwnd, const RenderedDocument* doc)
 			}
 
 			AppendDebugLog("Image[%d]: size=%ldx%ld", bestIndex, (long)widthPx, (long)heightPx);
+			maxWidthPx = GetRichEditContentWidthPx(hwnd);
+			ScaleImageToFitWidthPx(&widthPx, &heightPx, maxWidthPx);
+			AppendDebugLog("Image[%d]: scaled size=%ldx%ld maxWidth=%ld", bestIndex, (long)widthPx, (long)heightPx, (long)maxWidthPx);
 
 			SendMessageW(hwnd, EM_EXSETSEL, 0, (LPARAM)&bestFind.chrgText);
 			SendMessageW(hwnd, EM_REPLACESEL, FALSE, (LPARAM)L"");

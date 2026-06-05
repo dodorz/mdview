@@ -237,6 +237,8 @@ static DWORD CALLBACK RichEditStreamInCallback(DWORD_PTR cookie, LPBYTE buffer, 
 static BOOL SetRichEditRtf(HWND hwnd, const char* rtfText);
 static BOOL RenderIntoRichEdit(HWND hwnd, const RenderedDocument* doc);
 static VisibleCharRange GetVisibleCharRange(HWND hwnd);
+static LONG GetRichEditContentWidthPx(HWND hwnd);
+static void ScaleImageToFitWidthPx(LONG* widthPx, LONG* heightPx, LONG maxWidthPx);
 static RenderedDocument* RenderMarkdownDocument(const char* markdown, const char* imgPath, int enableImages);
 static void FreeRenderedDocument(RenderedDocument* doc);
 static BOOL CreateReadOnlyStreamFromBytes(const unsigned char* data, size_t length, IStream** streamOut);
@@ -1053,6 +1055,51 @@ GetVisibleCharRange(HWND hwnd)
 	return range;
 }
 
+static LONG
+GetRichEditContentWidthPx(HWND hwnd)
+{
+	RECT rect;
+	RECT clientRect;
+
+	if (hwnd == NULL) {
+		return 0;
+	}
+
+	ZeroMemory(&rect, sizeof(rect));
+	SendMessageW(hwnd, EM_GETRECT, 0, (LPARAM)&rect);
+	if (rect.right > rect.left) {
+		return rect.right - rect.left;
+	}
+
+	if (!GetClientRect(hwnd, &clientRect)) {
+		return 0;
+	}
+	if (clientRect.right - clientRect.left <= (MARGIN * 2)) {
+		return clientRect.right - clientRect.left;
+	}
+	return (clientRect.right - clientRect.left) - (MARGIN * 2);
+}
+
+static void
+ScaleImageToFitWidthPx(LONG* widthPx, LONG* heightPx, LONG maxWidthPx)
+{
+	if (widthPx == NULL || heightPx == NULL) {
+		return;
+	}
+	if (*widthPx <= 0 || *heightPx <= 0 || maxWidthPx <= 0) {
+		return;
+	}
+	if (*widthPx <= maxWidthPx) {
+		return;
+	}
+
+	*heightPx = (LONG)(((LONGLONG)*heightPx * (LONGLONG)maxWidthPx) / (LONGLONG)*widthPx);
+	*widthPx = maxWidthPx;
+	if (*heightPx <= 0) {
+		*heightPx = 1;
+	}
+}
+
 static BOOL
 CreateReadOnlyStreamFromBytes(const unsigned char* data, size_t length, IStream** streamOut)
 {
@@ -1505,6 +1552,7 @@ InsertPendingImagesInRange(HWND hwnd, const RenderedDocument* doc, const Visible
 			size_t pngLength = 0;
 			LONG widthPx = 0;
 			LONG heightPx = 0;
+			LONG maxWidthPx = 0;
 			IStream* imageStream = NULL;
 			RICHEDIT_IMAGE_PARAMETERS imageParams;
 
@@ -1520,6 +1568,8 @@ InsertPendingImagesInRange(HWND hwnd, const RenderedDocument* doc, const Visible
 				continue;
 			}
 			free(pngBytes);
+			maxWidthPx = GetRichEditContentWidthPx(hwnd);
+			ScaleImageToFitWidthPx(&widthPx, &heightPx, maxWidthPx);
 
 			SendMessageW(hwnd, EM_EXSETSEL, 0, (LPARAM)&bestFind.chrgText);
 			SendMessageW(hwnd, EM_REPLACESEL, FALSE, (LPARAM)L"");
@@ -1623,6 +1673,9 @@ InsertDecodedImagePayload(HWND hwnd, const BackgroundImagePayload* payload)
 	CHARRANGE range;
 	IStream* imageStream = NULL;
 	RICHEDIT_IMAGE_PARAMETERS imageParams;
+	LONG widthPx;
+	LONG heightPx;
+	LONG maxWidthPx;
 
 	if (payload == NULL || payload->markerUtf8 == NULL || payload->pngBytes == NULL) {
 		return FALSE;
@@ -1640,13 +1693,17 @@ InsertDecodedImagePayload(HWND hwnd, const BackgroundImagePayload* payload)
 	if (!CreateReadOnlyStreamFromBytes(payload->pngBytes, payload->pngLength, &imageStream)) {
 		return FALSE;
 	}
+	widthPx = payload->widthPx;
+	heightPx = payload->heightPx;
+	maxWidthPx = GetRichEditContentWidthPx(hwnd);
+	ScaleImageToFitWidthPx(&widthPx, &heightPx, maxWidthPx);
 
 	SendMessageW(hwnd, EM_SETREADONLY, FALSE, 0);
 	SendMessageW(hwnd, EM_EXSETSEL, 0, (LPARAM)&find.chrgText);
 	SendMessageW(hwnd, EM_REPLACESEL, FALSE, (LPARAM)L"");
 	ZeroMemory(&imageParams, sizeof(imageParams));
-	imageParams.xWidth = (payload->widthPx * 2540) / 96;
-	imageParams.yHeight = (payload->heightPx * 2540) / 96;
+	imageParams.xWidth = (widthPx * 2540) / 96;
+	imageParams.yHeight = (heightPx * 2540) / 96;
 	imageParams.Ascent = 0;
 	imageParams.Type = TA_BASELINE;
 	imageParams.pwszAlternateText = L"";
