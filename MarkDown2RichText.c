@@ -977,6 +977,12 @@ static __declspec(thread) int sub_state = 0;
 static __declspec(thread) int html_u_state = 0;
 
 static int
+is_word_char(unsigned char c)
+{
+	return isalnum(c) || c == '_';
+}
+
+static int
 has_closing_single_emphasis(const char* p, char marker)
 {
 	const char* q;
@@ -1302,6 +1308,9 @@ append_buffer_line(char* line)
 	char* pos = line;
 	while (*pos != 0)
 	{
+		char prevChar = pos > line ? *(pos - 1) : '\0';
+		char nextChar = *(pos + 1);
+
 		// Handle HTML entities first
 		if (*pos == '&' && strchr(pos, ';') != NULL) {
 			const char* entity_end = strchr(pos, ';');
@@ -1426,6 +1435,13 @@ append_buffer_line(char* line)
 
 		if ((strncmp(pos, "**", 2) == 0 && strncmp(pos + 2, "*", 1) != 0) ||
 			(strncmp(pos, "__", 2) == 0 && strncmp(pos + 2, "_", 1) != 0)) {
+			if (*pos == '_' &&
+				is_word_char((unsigned char)prevChar) &&
+				is_word_char((unsigned char)pos[2])) {
+				append_rtf_char(*pos);
+				pos++;
+				continue;
+			}
 			if (!bold_state && !has_closing_double_emphasis(pos, *pos)) {
 				append_rtf_char(*pos);
 				pos++;
@@ -1446,6 +1462,13 @@ append_buffer_line(char* line)
 
 		if ((strncmp(pos, "*", 1) == 0 && strncmp(pos + 1, "*", 1) != 0) ||
 			(strncmp(pos, "_", 1) == 0 && strncmp(pos + 1, "_", 1) != 0)) {
+			if (*pos == '_' &&
+				is_word_char((unsigned char)prevChar) &&
+				is_word_char((unsigned char)nextChar)) {
+				append_rtf_char(*pos);
+				pos++;
+				continue;
+			}
 			if (!italic_state && !has_closing_single_emphasis(pos, *pos)) {
 				append_rtf_char(*pos);
 				pos++;
