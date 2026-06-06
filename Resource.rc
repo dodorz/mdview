@@ -1,6 +1,8 @@
 // Microsoft Visual C++ generated resource script.
 //
+#pragma code_page(65001)
 #include "resource.h"
+#include "version_auto.h"
 
 #define APSTUDIO_READONLY_SYMBOLS
 /////////////////////////////////////////////////////////////////////////////
@@ -85,12 +87,12 @@ END
 /////////////////////////////////////////////////////////////////////////////
 //
 // Version
-// Version values are injected by GitHub Actions from the release tag.
+// Version values are generated at build time from Git tags when available.
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,0,0,0
- PRODUCTVERSION 0,0,0,0
+ FILEVERSION APP_VERSION_QUAD
+ PRODUCTVERSION APP_VERSION_QUAD
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -107,12 +109,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "dodo"
             VALUE "FileDescription", "Markdown viewer fork (mdview)"
-            VALUE "FileVersion", "0,0,0,0"
+            VALUE "FileVersion", APP_VERSION_STR
             VALUE "InternalName", "mdview.exe"
             VALUE "LegalCopyright", "Copyright (C) 2026 dodo"
             VALUE "OriginalFilename", "mdview.exe"
             VALUE "ProductName", "Markdown Viewer"
-            VALUE "ProductVersion", "0,0,0,0"
+            VALUE "ProductVersion", APP_VERSION_STR
         END
     END
     BLOCK "VarFileInfo"
@@ -134,7 +136,7 @@ FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
     DEFPUSHBUTTON   "OK",IDOK,210,120,50,14
     LTEXT           "By dodo, 2026 (forked from Thomas Fuhringer's original project)",IDC_STATIC,50,16,188,16
-    LTEXT           "Version 0.0.0.0",IDC_STATIC,50,38,188,16
+    LTEXT           APP_VERSION_LABEL_EN,IDC_STATIC,50,38,188,16
     LTEXT           "https://github.com/dodorz/markdownviewer",IDC_STATIC,50,60,220,16
     ICON            IDI_APP,IDC_STATIC,16,16,49,49
 END
@@ -170,6 +172,51 @@ BEGIN
     IDS_MENU_FILE_EXIT      "Close Application"
     IDS_MENU_HELP_ABOUT     "Application Information"
 END
+
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
+
+IDR_MENU_BAR MENU
+BEGIN
+    POPUP "文件(&F)"
+    BEGIN
+        MENUITEM "打开(&O)\tO",            IDM_FILE_OPEN
+        MENUITEM "刷新(&R)\tR",            IDM_FILE_REFRESH
+        MENUITEM SEPARATOR
+        MENUITEM "关闭(&Q)\tQ",            IDM_FILE_EXIT
+    END
+    POPUP "帮助(&H)"
+    BEGIN
+        MENUITEM "关于",                   IDM_HELP_ABOUT
+    END
+END
+
+IDR_ACCELERATOR ACCELERATORS
+BEGIN
+    "O",            IDM_FILE_OPEN,     VIRTKEY, NOINVERT
+    "R",            IDM_FILE_REFRESH,  VIRTKEY, NOINVERT
+    "Q",            IDM_FILE_EXIT,     VIRTKEY, NOINVERT
+END
+
+IDD_ABOUTBOX DIALOGEX 0, 0, 270, 114
+STYLE DS_SYSMODAL | DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "关于 mdview"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    DEFPUSHBUTTON   "确定",IDOK,210,120,50,14
+    LTEXT           "dodo 制作，2026（基于 Thomas Fuhringer 原始项目分支）",IDC_STATIC,50,16,188,16
+    LTEXT           APP_VERSION_LABEL_ZH,IDC_STATIC,50,38,188,16
+    LTEXT           "https://github.com/dodorz/markdownviewer",IDC_STATIC,50,60,220,16
+    ICON            IDI_APP,IDC_STATIC,16,16,49,49
+END
+
+STRINGTABLE
+BEGIN
+    IDS_APP                 "mdview"
+    IDS_MENU_FILE_EXIT      "关闭程序"
+    IDS_MENU_HELP_ABOUT     "程序信息"
+END
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
 #endif    // English (United States) resources
 /////////////////////////////////////////////////////////////////////////////

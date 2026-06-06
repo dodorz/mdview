@@ -79,6 +79,7 @@ bld/
 
 ## Other files
 shots/
+version_auto.h
 *.cache
 *.bak
 *.swp

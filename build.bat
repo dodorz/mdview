@@ -75,6 +75,14 @@ if defined VS_PATH (
 
 cd /d "%SCRIPT_DIR%"
 
+echo Generating version_auto.h...
+call :generate_version_header
+if errorlevel 1 (
+    echo Error: failed to generate version_auto.h
+    popd
+    exit /b 1
+)
+
 echo.
 echo ========================================
 echo Build Configuration
@@ -106,6 +114,11 @@ if %ERRORLEVEL% EQU 0 (
 
 popd
 endlocal
+exit /b 0
+
+:generate_version_header
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%generate-version-header.ps1"
+if errorlevel 1 exit /b 1
 exit /b 0
 
 :find_vsdevcmd
