@@ -636,7 +636,9 @@ append_image(const char* file_name)
 			return;
 		}
 		free(resolved_path);
+		append_buffer("{\\f1\\cf3\\highlight2\\chbrdr\\brdrs\\brdrw15\\brdrcf4 ");
 		append_buffer(marker);
+		append_buffer("}");
 		return;
 	}
 }

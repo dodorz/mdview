@@ -23,7 +23,7 @@ foreach ($tag in $allTags) {
     }
 }
 
-$exactTag = git -C $root describe --tags --exact-match 2>$null
+$exactTag = cmd /c "git -C `"$root`" describe --tags --exact-match 2>nul"
 if ($LASTEXITCODE -eq 0 -and $exactTag -match $pattern) {
     $version = "{0}.{1}.{2}.{3}" -f [int]$Matches[1], [int]$Matches[2], [int]$Matches[3], $(if ($Matches[4]) { [int]$Matches[4] } else { 0 })
 }

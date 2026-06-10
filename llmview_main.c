@@ -245,6 +245,7 @@ static BOOL CreateReadOnlyStreamFromBytes(const unsigned char* data, size_t leng
 static BOOL DownloadUrlBytes(const char* url, unsigned char** dataOut, size_t* lengthOut);
 static BOOL CreateInputStreamFromSourceUtf8(const char* sourceUtf8, IStream** streamOut);
 static BOOL CreatePngBytesAndSizeFromUtf8Source(const char* sourceUtf8, unsigned char** pngBytesOut, size_t* pngLengthOut, LONG* widthPxOut, LONG* heightPxOut);
+static PendingImageRef* BuildPrioritizedPendingImages(HWND hwnd, const RenderedDocument* doc, int* countOut);
 static BOOL InsertPendingImagesInRange(HWND hwnd, const RenderedDocument* doc, const VisibleCharRange* visibleRange, BOOL visibleOnly, BOOL* insertedFlags);
 static int CountRemainingPendingImages(const RenderedDocument* doc, const BOOL* insertedFlags);
 static PendingImageRef* CopyRemainingPendingImages(const RenderedDocument* doc, const BOOL* insertedFlags, int* countOut);
@@ -1725,13 +1726,109 @@ FreeBackgroundImagePayload(BackgroundImagePayload* payload)
 	free(payload);
 }
 
+static PendingImageRef*
+BuildPrioritizedPendingImages(HWND hwnd, const RenderedDocument* doc, int* countOut)
+{
+	BOOL* selected;
+	PendingImageRef* prioritized;
+	VisibleCharRange visibleRange;
+	int remainingCount;
+	int outputIndex = 0;
+	int i;
+
+	*countOut = 0;
+	if (doc == NULL || doc->imageCount <= 0) {
+		return NULL;
+	}
+
+	selected = (BOOL*)calloc((size_t)doc->imageCount, sizeof(BOOL));
+	prioritized = (PendingImageRef*)calloc((size_t)doc->imageCount, sizeof(PendingImageRef));
+	if (selected == NULL || prioritized == NULL) {
+		free(selected);
+		free(prioritized);
+		return NULL;
+	}
+
+	visibleRange = GetVisibleCharRange(hwnd);
+	remainingCount = doc->imageCount;
+	while (remainingCount > 0) {
+		int bestIndex = -1;
+		LONG bestScore = LONG_MAX;
+		FINDTEXTEXW bestFind;
+
+		ZeroMemory(&bestFind, sizeof(bestFind));
+		for (i = 0; i < doc->imageCount; ++i) {
+			FINDTEXTEXW find;
+			CHARRANGE range;
+			WCHAR markerW[128];
+			LONG score;
+
+			if (selected[i] || doc->images[i].markerUtf8 == NULL || doc->images[i].pathUtf8 == NULL) {
+				continue;
+			}
+			if (MultiByteToWideChar(CP_UTF8, 0, doc->images[i].markerUtf8, -1, markerW, _countof(markerW)) == 0) {
+				continue;
+			}
+
+			range.cpMin = 0;
+			range.cpMax = -1;
+			find.chrg = range;
+			find.lpstrText = markerW;
+			if (SendMessageW(hwnd, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&find) == -1) {
+				continue;
+			}
+
+			if (!visibleRange.valid) {
+				score = find.chrgText.cpMin;
+			}
+			else if (find.chrgText.cpMax < visibleRange.cpMin) {
+				score = visibleRange.cpMin - find.chrgText.cpMax;
+			}
+			else if (find.chrgText.cpMin > visibleRange.cpMax) {
+				score = find.chrgText.cpMin - visibleRange.cpMax;
+			}
+			else {
+				score = 0;
+			}
+
+			if (bestIndex < 0 || score < bestScore || (score == bestScore && find.chrgText.cpMin < bestFind.chrgText.cpMin)) {
+				bestIndex = i;
+				bestScore = score;
+				bestFind = find;
+			}
+		}
+
+		if (bestIndex < 0) {
+			break;
+		}
+
+		prioritized[outputIndex].markerUtf8 = _strdup(doc->images[bestIndex].markerUtf8);
+		prioritized[outputIndex].pathUtf8 = _strdup(doc->images[bestIndex].pathUtf8);
+		if (prioritized[outputIndex].markerUtf8 == NULL || prioritized[outputIndex].pathUtf8 == NULL) {
+			FreePendingImageRefs(prioritized, doc->imageCount);
+			free(selected);
+			return NULL;
+		}
+
+		selected[bestIndex] = TRUE;
+		outputIndex++;
+		remainingCount--;
+	}
+
+	free(selected);
+	*countOut = outputIndex;
+	if (outputIndex == 0) {
+		free(prioritized);
+		return NULL;
+	}
+	return prioritized;
+}
+
 static BOOL
 RenderIntoRichEdit(HWND hwnd, const RenderedDocument* doc)
 {
-	BOOL* insertedFlags = NULL;
-	VisibleCharRange visibleRange;
-	PendingImageRef* remainingImages = NULL;
-	int remainingCount = 0;
+	PendingImageRef* images = NULL;
+	int imageCount = 0;
 
 	if (doc == NULL) {
 		return FALSE;
@@ -1742,15 +1839,8 @@ RenderIntoRichEdit(HWND hwnd, const RenderedDocument* doc)
 		return TRUE;
 	}
 
-	insertedFlags = (BOOL*)calloc((size_t)doc->imageCount, sizeof(BOOL));
-	if (insertedFlags == NULL) {
-		return FALSE;
-	}
-	visibleRange = GetVisibleCharRange(hwnd);
-	InsertPendingImagesInRange(hwnd, doc, &visibleRange, TRUE, insertedFlags);
-	remainingImages = CopyRemainingPendingImages(doc, insertedFlags, &remainingCount);
-	ReplaceBackgroundImageQueue(remainingImages, remainingCount, (DWORD)g_loadGeneration);
-	free(insertedFlags);
+	images = BuildPrioritizedPendingImages(hwnd, doc, &imageCount);
+	ReplaceBackgroundImageQueue(images, imageCount, (DWORD)g_loadGeneration);
 	InvalidateRect(hwnd, NULL, TRUE);
 	UpdateWindow(hwnd);
 	return TRUE;
