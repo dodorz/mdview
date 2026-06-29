@@ -1541,7 +1541,22 @@ append_buffer_line(char* line)
 		}
 
 		if (strncmp(pos, "[", 1) == 0) {
-			char* text_end = strstr(pos + 1, "](");
+			char* scan = pos + 1;
+			char* text_end = NULL;
+			while (*scan) {
+				char* found = strstr(scan, "](");
+				if (!found)
+					break;
+				if (found > pos + 2 && *(found - 1) == '[' && *(found - 2) == '!') {
+					char* inner_close = strchr(found + 2, ')');
+					if (inner_close) {
+						scan = inner_close + 1;
+						continue;
+					}
+				}
+				text_end = found;
+				break;
+			}
 			if (text_end) {
 				char* url_start = text_end + 2;
 				char* url_end = strstr(url_start, ")");
@@ -1551,7 +1566,21 @@ append_buffer_line(char* line)
 					append_buffer("\\ul {\\field{\\*\\fldinst {HYPERLINK \"");
 					append_buffer(url_start);
 					append_buffer("\" }}{\\fldrslt {");
-					append_buffer(pos + 1);
+					char* display = pos + 1;
+					if (strncmp(display, "![", 2) == 0) {
+						char* img_close = strstr(display + 2, "](");
+						if (img_close && img_close < text_end) {
+							char* img_url = img_close + 2;
+							char* img_end = strchr(img_url, ')');
+							if (img_end && img_end < text_end) {
+								*img_end = 0;
+								append_image(img_url);
+							}
+						}
+					}
+					else {
+						append_buffer(display);
+					}
 					append_buffer("}}}\\ul0 ");
 					pos = url_end + 1;
 					continue;
